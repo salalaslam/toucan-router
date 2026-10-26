@@ -1,0 +1,121 @@
+[settings]
+owner_name = "the owner"
+timezone = "UTC"
+upload_command = "toucan-upload-loom"  # Loom requires toucan-tools
+# alert_url = "https://alerts.example.com/topic"
+# alert_url_file = "~/.config/toucan/alert-url"  # mode 600
+# owner_teams_id = "00000000-0000-0000-0000-000000000000"
+owner_whatsapp = ""  # your phone JID, such as 15550000000@s.whatsapp.net
+rewake_minutes = 15
+wake_gap_minutes = 2
+max_wakes = 3
+claimed_stale_hours = 4
+done_unclosed_minutes = 30
+whatsapp_stale_minutes = 120
+rate_per_hour = 20
+context_hours = 24
+ack_alert_minutes = 5
+fallback_minutes = 5
+rotate_tokens = 200000       # ask idle owner threads to hand over at this context size
+rotate_stall_minutes = 60    # alert if a handover has not finished by then
+# transcribe = "chatgpt-transcribe"   # voice notes become text before they reach a thread
+
+[people.alice]
+name = "Alice Example"
+role = "pm"
+teams_id = "00000000-0000-0000-0000-000000000001"
+whatsapp = ["15550000001@s.whatsapp.net", "100000000000001@lid"]
+email = ["alice@example.com"]
+
+# [people.someone]
+# name = "Another requester"
+# teams_id = "ENTRA-OBJECT-ID"
+# whatsapp = ["15550000002@s.whatsapp.net"]
+
+[threads.project-a]
+t3_thread = "11111111-1111-1111-1111-111111111111"   # optional fallback; the hook determines the live thread
+project = "project-a"
+hook_file = "~/.config/toucan/hooks/project-a.hook"
+# rotate_tokens = 300000   # override the context limit for this thread
+# fallback = "standby"   # takes this thread's requests while it is stopped by a rate limit
+
+# [threads.standby]   # put it on the other provider
+# t3_thread = "T3-THREAD-ID"
+# project = "toucan"
+# hook_file = "~/.config/toucan/hooks/standby.hook"
+
+[[routes]]
+name = "alice-whatsapp"
+label = "WhatsApp: Alice"
+source = "whatsapp"
+chats = ["15550000001@s.whatsapp.net", "100000000000001@lid"]
+thread = "project-a"
+mode = "act"
+requesters = ["alice"]
+active_from = "2026-10-17T00:00:00+00:00"
+
+# The owner's own 1:1 with the assistant number: their messages there become requests.
+# [people.owner]
+# name = "Owner"
+# whatsapp = ["15550000000@s.whatsapp.net"]   # the same number as owner_whatsapp
+#
+# [[routes]]
+# name = "owner-whatsapp"
+# label = "WhatsApp: owner"
+# source = "whatsapp"
+# chats = ["15550000000@s.whatsapp.net"]
+# thread = "project-a"
+# mode = "act"
+# requesters = ["owner"]
+# active_from = "2026-10-17T00:00:00+00:00"
+
+# [[routes]]
+# name = "team-chat"
+# label = "Teams: team chat"
+# source = "teams"
+# chats = ["GRAPH-CHAT-ID"]
+# thread = "project-a"
+# mode = "act"
+# post_as_bot = true          # reply in the chat as the Toucan bot
+# reply_via_whatsapp = false  # opt in to DM replies to the asker instead
+# owner_reply_closes = true   # stand down if the owner answers in the chat first
+# requesters = ["alice"]
+# active_from = "2026-10-17T00:00:00+00:00"
+
+# A WhatsApp group with a client in it: replies go to one person instead of the group.
+# [[routes]]
+# name = "client-group"
+# source = "whatsapp"
+# chats = ["120363000000000000@g.us"]
+# thread = "project-a"
+# mode = "act"
+# reply_to = "alice"                             # every reply and send goes to Alice's WhatsApp
+# reply_prefix = "Automated reply, not reviewed."   # added at the top of each one
+# requesters = ["alice"]
+# active_from = "2026-10-17T00:00:00+00:00"
+
+# [[routes]]
+# name = "email-inbox"
+# source = "email"
+# chats = ["support@example.com"]
+# thread = "project-a"
+# mode = "draft"              # email is read-only; replies go to owner_whatsapp
+# requesters = ["alice"]
+# active_from = "2026-10-17T00:00:00+00:00"
+
+[sources.whatsapp]
+store = "~/.local/state/wacli"
+account = "wa"
+service_unit = ""
+
+[sources.teams]
+# bot_db = "~/.local/state/toucan-bot/bot.db"
+# stale_minutes = 5
+service_unit = ""
+
+[sources.email]
+# notmuch_config = "~/.notmuch-config"
+stale_minutes = 60
+
+[t3]
+db = "~/.t3/userdata/statev2.sqlite"

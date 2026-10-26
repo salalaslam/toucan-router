@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Fail if any string from a private denylist appears in the tree, the git history or a built artifact.
+
+The denylist lives outside the repo (default ~/.config/toucan-release/denylist, or $TOUCAN_DENYLIST):
+one case-insensitive substring per line, or `re:PATTERN` for a regex, # for comments. Matches are reported by file, line and
+denylist line number, never by value, so the output is safe to paste anywhere.
+
+    scripts/check-private            # tracked and untracked files (not ignored)
+    scripts/check-private --history  # every blob reachable from any ref
+    scripts/check-private dist/*.whl dist/*.tar.gz
+"""
+import io
+import os
+import re
+import subprocess
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+ALLOW = [re.compile(p) for p in (ROOT / 'scripts/check-private.allow').read_text().split('\n')
+         if p.strip() and not p.startswith('#')] if (ROOT / 'scripts/check-private.allow').exists() else []
+
+
+def load():
+    path = Path(os.environ.get('TOUCAN_DENYLIST', '~/.config/toucan-release/denylist')).expanduser()
+    if not path.is_file():
+        sys.exit(f'denylist not found at {path}; set TOUCAN_DENYLIST')
+    return [(n, re.compile(line.strip()[3:], re.I) if line.startswith('re:') else line.strip().lower())
+            for n, line in enumerate(path.read_text().splitlines(), 1) if line.strip() and not line.startswith('#')]
+
+
+def scan(name, data, terms):
+    hits = []
+    text = data.decode('utf-8', 'replace')
+    for lineno, line in enumerate(text.splitlines(), 1):
+        low = line.lower()
+        for allow in ALLOW:
+            low = allow.sub('', low)
+        hits += [f'{name}:{lineno}: denylist line {n}' for n, term in terms
+                 if (term.search(low) if isinstance(term, re.Pattern) else term in low)]
+    return hits
+
+
+def files():
+    out = subprocess.run(['git', 'ls-files', '-co', '--exclude-standard', '-z'], cwd=ROOT,
+                         capture_output=True, check=True).stdout
+    for rel in filter(None, out.decode().split('\0')):
+        path = ROOT / rel
+        if path.is_file() and rel != 'scripts/check-private.allow':
+            yield rel, path.read_bytes()
+
+
+def history():
+    objects = subprocess.run(['git', 'rev-list', '--objects', '--all'], cwd=ROOT, capture_output=True,
+                             check=True, text=True).stdout.splitlines()
+    for entry in objects:
+        sha, _, rel = entry.partition(' ')
+        kind = subprocess.run(['git', 'cat-file', '-t', sha], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+        if kind == 'blob':
+            yield f'{sha[:10]}:{rel}', subprocess.run(['git', 'cat-file', 'blob', sha], cwd=ROOT,
+                                                       capture_output=True).stdout
+        elif kind == 'commit':
+            yield f'commit {sha[:10]}', subprocess.run(['git', 'cat-file', 'commit', sha], cwd=ROOT,
+                                                        capture_output=True).stdout
+
+
+def artifact(path):
+    if path.suffix == '.whl' or path.suffix == '.zip':
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist():
+                yield f'{path.name}!{info.filename}', z.read(info)
+    else:
+        with tarfile.open(path) as t:
+            for member in t.getmembers():
+                if member.isfile():
+                    yield f'{path.name}!{member.name}', t.extractfile(member).read()
+
+
+def main(argv):
+    terms = load()
+    if argv[:1] == ['--history']:
+        items = history()
+    elif argv:
+        items = (item for a in argv for item in artifact(Path(a)))
+    else:
+        items = files()
+    hits = [h for name, data in items for h in scan(name, data, terms)]
+    print('\n'.join(hits) or f'clean ({len(terms)} private strings checked)')
+    return 1 if hits else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,13 @@
+title = "toucan-router"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fictional fixtures"
+regexes = [
+  '''0{8}-0{4}-0{4}-0{4}-0{11}[0-9]''',
+  '''1{8}-1{4}-1{4}-1{4}-1{12}''',
+  '''1555\d{7}@s\.whatsapp\.net''',
+  '''https?://[a-z0-9.-]*example\.com/api/hooks/[^\s"']+''',
+]

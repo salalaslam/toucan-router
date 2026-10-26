@@ -1,0 +1,13 @@
+[Unit]
+Description=Toucan Teams bot
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/toucan-bot serve
+Restart=always
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=default.target

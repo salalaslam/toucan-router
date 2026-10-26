@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep the WhatsApp store up to date
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/wacli sync --follow
+Restart=always
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=default.target

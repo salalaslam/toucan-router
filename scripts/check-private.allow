@@ -1,0 +1,4 @@
+# Regexes (lowercase) removed from each line before the denylist is checked. Public on purpose.
+github\.com/salalaslam/toucan-router
+salalaslam@users\.noreply\.github\.com
+github\.com/salalaslam/teams-reader

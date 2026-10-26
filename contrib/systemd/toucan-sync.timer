@@ -1,0 +1,10 @@
+[Unit]
+Description=Run toucan sync every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+Unit=toucan-sync.service
+
+[Install]
+WantedBy=timers.target

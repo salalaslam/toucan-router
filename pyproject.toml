@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "toucan-router"
+version = "0.1.0"
+description = "Route approved chat requests to their T3 threads and track replies."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["routing", "agents", "whatsapp", "teams", "t3"]
+classifiers = ["Programming Language :: Python :: 3", "Programming Language :: Python :: 3 :: Only", "Operating System :: POSIX :: Linux"]
+
+[project.urls]
+Homepage = "https://github.com/salalaslam/toucan-router"
+Repository = "https://github.com/salalaslam/toucan-router"
+
+[project.scripts]
+toucan = "toucan.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/toucan"]
+exclude = ["/src/toucan/toucan.example.toml"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"docs" = "toucan/data/docs"
+"AGENTS.md" = "toucan/data/AGENTS.md"
+"skills/toucan-owner-thread/SKILL.md" = "toucan/data/skills/toucan-owner-thread/SKILL.md"
+"contrib/systemd" = "toucan/data/systemd"
+"examples/toucan.example.toml" = "toucan/toucan.example.toml"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.uv.workspace]
+members = ["bot", "tools"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/scripts/check-private.allow", "/bot", "/tools"]

@@ -1,0 +1,18 @@
+# pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: check-generic-pii
+        name: personal data patterns
+        entry: scripts/check-generic-pii
+        language: system
+        pass_filenames: false
+      - id: check-private
+        name: private denylist (maintainers only; skipped when no denylist exists)
+        entry: sh -c '[ -f "${TOUCAN_DENYLIST:-$HOME/.config/toucan-release/denylist}" ] || exit 0; scripts/check-private'
+        language: system
+        pass_filenames: false
