@@ -4,7 +4,7 @@ Threads sometimes need to hand someone a spreadsheet: a test report, a list of o
 estimate. `toucan-sheets` creates and edits Google Sheets from the command line and prints
 JSON, so an agent can create a sheet and put its link in a reply.
 
-It comes in the optional `toucan-tools` package (`uv tool install toucan-tools`). The router
+It comes in the optional `toucan-router-tools` package (`uv tool install toucan-router-tools`). The router
 doesn't use it; it's a tool for agents. It uses only the `drive.file` scope. With that scope it can create
 spreadsheets, and edit the ones it created or that you opened with it. It can't see the rest
 of your Drive.

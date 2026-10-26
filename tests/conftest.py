@@ -200,6 +200,12 @@ active_from = "2026-10-17T00:00:00+05:00"
         return self.app.rows('SELECT * FROM alerts')
 
 
+@pytest.fixture(autouse=True)
+def default_config_home(monkeypatch):
+    # CI runners set XDG_CONFIG_HOME, which would override the HOME that tests point at tmp_path.
+    monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
+
+
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     w = World(tmp_path)

@@ -126,7 +126,7 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
             'teams.service': 'toucan enable', 'bot.command': 'uv tool install toucan-teams-bot',
             'bot.status': 'toucan-bot status --json',
             'email.command': 'toucan guide setup-email', 'email.fresh': 'notmuch new',
-            'transcribe.command': 'toucan guide setup-whatsapp', 'upload.command': 'uv tool install toucan-tools',
+            'transcribe.command': 'toucan guide setup-whatsapp', 'upload.command': 'uv tool install toucan-router-tools',
             'upload.login': 'toucan-upload-loom login', 'sync.timer': 'toucan enable',
         }
         command = commands.get(id, f'toucan guide {doc}')
@@ -274,7 +274,7 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
         else:
             available = bool(command and shutil.which(command[0]))
             optional = key == 'upload_command' and command == ['toucan-upload-loom']
-            message = ('Uploads not set up; optional (install toucan-tools for Loom)' if optional else f'{key} command unavailable')
+            message = ('Uploads not set up; optional (install toucan-router-tools for Loom)' if optional else f'{key} command unavailable')
             check(id, 'media', available, f'{key} available' if available else message, doc, 'skip' if optional else 'todo')
         if key == 'upload_command' and command == ['toucan-upload-loom'] and available:
             logged_in = False

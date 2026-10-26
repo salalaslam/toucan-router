@@ -23,7 +23,7 @@ Secrets never go in this file. Webhook URLs live in hook files and the alert URL
 | `timezone` | `"UTC"` | IANA zone used for every time Toucan shows (`Europe/London`, `America/New_York`). |
 | `alert_url` | none | URL that receives alerts. See [setup-alerts.md](setup-alerts.md). |
 | `alert_url_file` | none | Mode-600 file containing the alert URL, for secret ntfy topics. When set, it wins over `alert_url` and must contain a valid HTTP URL. |
-| `upload_command` | `"toucan-upload-loom"` | Command used by `toucan upload`. The default comes from the optional `toucan-tools` package. See [setup-upload.md](setup-upload.md). |
+| `upload_command` | `"toucan-upload-loom"` | Command used by `toucan upload`. The default comes from the optional `toucan-router-tools` package. See [setup-upload.md](setup-upload.md). |
 | `transcribe` | none | Command that takes an audio file path and prints its transcript. Voice notes are transcribed before they reach a thread. |
 | `rate_per_hour` | 20 | Most WhatsApp messages Toucan sends to one recipient per hour, counting drafts and escalations to you. |
 | `rewake_minutes` | 15 | Wake an owner thread again after this long while requests stay unclaimed. |
@@ -165,8 +165,8 @@ requests would come back.
 |---|---|
 | `TOUCAN_CONFIG` | Config file path. |
 | `TOUCAN_DB` | State database path. |
-| `TOUCAN_LOOM_CLIENT_ID` | OAuth client ID for `toucan-upload-loom` (toucan-tools). |
-| `TOUCAN_SHEETS_DIR` | Folder holding `toucan-sheets`' OAuth client and token (toucan-tools; default `~/.config/toucan/sheets`). |
+| `TOUCAN_LOOM_CLIENT_ID` | OAuth client ID for `toucan-upload-loom` (toucan-router-tools). |
+| `TOUCAN_SHEETS_DIR` | Folder holding `toucan-sheets`' OAuth client and token (toucan-router-tools; default `~/.config/toucan/sheets`). |
 | `TOUCAN_BOT_STATE_DIR` | Bot state directory, default `~/.local/state/toucan-bot`. |
 | `TOUCAN_BOT_CONFIG` | The bot's config file path. |
 | `TOUCAN_BOT_TENANT_ID`, `TOUCAN_BOT_PUBLIC_URL`, `TOUCAN_BOT_PORT` | Override the bot's config file. |

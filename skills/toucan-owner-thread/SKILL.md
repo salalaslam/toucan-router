@@ -35,7 +35,7 @@ in the wake-up prompt and in `~/.config/toucan/toucan.toml` under `[threads.KEY]
 | Risky, out of scope, or needs the owner | `toucan escalate REQ --claim ID --note "..."` |
 | The owner answered an escalation in this thread | `toucan resume REQ --thread KEY` |
 | A proof video to share | `toucan upload FILE --title "..."`, then put the link in the reply |
-| A spreadsheet to share | `toucan-sheets create "Title" --values rows.json` (if toucan-tools is installed), then put its URL in the reply |
+| A spreadsheet to share | `toucan-sheets create "Title" --values rows.json` (if toucan-router-tools is installed), then put its URL in the reply |
 | A message with no request (delivering a promise) | `toucan send --route NAME --thread KEY --text "..."` |
 
 Escalate anything involving production, money, credentials or commitments to clients.

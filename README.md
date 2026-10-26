@@ -59,8 +59,8 @@ The guides are in [docs/](docs/) and inside the package (`toucan guide --list`):
 | [setup-whatsapp](docs/setup-whatsapp.md) | wacli pairing and sync |
 | [setup-teams](docs/setup-teams.md) | the Teams bot: registration, approval, routing |
 | [setup-email](docs/setup-email.md) | read-only email through notmuch |
-| [setup-upload](docs/setup-upload.md) | the upload hook, and Loom through toucan-tools |
-| [setup-sheets](docs/setup-sheets.md) | Google Sheets through toucan-tools |
+| [setup-upload](docs/setup-upload.md) | the upload hook, and Loom through toucan-router-tools |
+| [setup-sheets](docs/setup-sheets.md) | Google Sheets through toucan-router-tools |
 | [setup-alerts](docs/setup-alerts.md) | ntfy or any alert URL |
 | [configuration](docs/configuration.md) | every config key |
 | [operations](docs/operations.md) | the request lifecycle, rotation, escalations, recovery |
@@ -83,7 +83,7 @@ Most people stop after the first or second tier.
 |---|---|---|
 | `toucan-router` | `toucan` | the router. Standard library only. |
 | `toucan-teams-bot` | `toucan-bot` | Teams: receives chat messages and posts replies. Needed for any Teams route. |
-| `toucan-tools` | `toucan-upload-loom`, `toucan-sheets` | optional tools for agents: Loom uploads ([docs/setup-upload.md](docs/setup-upload.md)) and Google Sheets ([docs/setup-sheets.md](docs/setup-sheets.md)). The router doesn't need them. |
+| `toucan-router-tools` | `toucan-upload-loom`, `toucan-sheets` | optional tools for agents: Loom uploads ([docs/setup-upload.md](docs/setup-upload.md)) and Google Sheets ([docs/setup-sheets.md](docs/setup-sheets.md)). The router doesn't need them. |
 
 ## Status
 
@@ -92,7 +92,7 @@ tables for optional features (rotation, rate-limit fallback, `resume`). When a T
 changes them, those features turn off, `toucan doctor` warns, and wakes keep working.
 
 WhatsApp support uses wacli, an unofficial client. Use a dedicated number: WhatsApp can ban
-numbers that use unofficial clients. The Loom uploader in `toucan-tools` also uses Loom's
+numbers that use unofficial clients. The Loom uploader in `toucan-router-tools` also uses Loom's
 unofficial API and is marked experimental. Read [SECURITY.md](SECURITY.md) before routing chats from people you
 don't fully trust: their messages reach agents that can run commands.
 

@@ -360,7 +360,7 @@ def test_doctor_treats_default_upload_as_optional(world, monkeypatch, available,
             assert items['upload.login']['status'] == 'skip'
         else:
             assert 'upload.login' not in items
-            assert items['upload.command']['message'] == 'Uploads not set up; optional (install toucan-tools for Loom)'
+            assert items['upload.command']['message'] == 'Uploads not set up; optional (install toucan-router-tools for Loom)'
     assert 'sheets.login' not in items
 
 

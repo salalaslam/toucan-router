@@ -3,7 +3,7 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "toucan-tools"
+name = "toucan-router-tools"
 version = "0.1.0"
 description = "Optional Loom and Google Sheets tools for Toucan Router."
 readme = {text = "Optional tools for Toucan Router. See the project homepage for setup instructions.", content-type = "text/plain"}
@@ -22,11 +22,11 @@ Repository = "https://github.com/salalaslam/toucan-router"
 test = ["pytest>=8"]
 
 [project.scripts]
-toucan-upload-loom = "toucan_tools.upload_loom:main"
-toucan-sheets = "toucan_tools.sheets:main"
+toucan-upload-loom = "toucan_router_tools.upload_loom:main"
+toucan-sheets = "toucan_router_tools.sheets:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/toucan_tools"]
+packages = ["src/toucan_router_tools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

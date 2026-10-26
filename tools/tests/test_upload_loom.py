@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from toucan_tools import upload_loom
+from toucan_router_tools import upload_loom
 
 
 @pytest.fixture

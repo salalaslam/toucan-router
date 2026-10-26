@@ -24,8 +24,8 @@ this before you route anyone's chats to a thread.
 |---|---|---|
 | T3 webhook URLs (contain a token) | `~/.config/toucan/hooks/*.hook` | mode 600; `doctor` warns otherwise |
 | Alert URL (may be a secret ntfy topic) | `alert_url_file` | mode 600 |
-| Loom token (toucan-tools) | `~/.config/toucan/loom/` | folder 700, files 600 |
-| Google OAuth client and token (toucan-tools) | `~/.config/toucan/sheets/` | folder 700, files 600; `drive.file` scope only |
+| Loom token (toucan-router-tools) | `~/.config/toucan/loom/` | folder 700, files 600 |
+| Google OAuth client and token (toucan-router-tools) | `~/.config/toucan/sheets/` | folder 700, files 600; `drive.file` scope only |
 | Teams messages received by the bot | `~/.local/state/toucan-bot/bot.db` | private messages from every chat the bot is in |
 | Teams inline screenshots | `~/.local/state/toucan-bot/media/` | folder 700, files 600; 10 MiB cap and 30-day retention by default |
 | Teams bot app ID and secret | `~/.config/toucan-bot/credentials.json` | mode 600; entered once through the setup page |
@@ -38,7 +38,7 @@ you pass `--show-ids`.
 
 - **WhatsApp:** wacli is an unofficial client. WhatsApp can restrict or ban numbers that use it.
   Use a dedicated number.
-- **Loom:** the uploader in `toucan-tools` uses Loom's unofficial upload API. It can break, and Loom
+- **Loom:** the uploader in `toucan-router-tools` uses Loom's unofficial upload API. It can break, and Loom
   could object to it being used this way.
 - **Teams:** the bot stores every message in the chats it's added to, not only the ones
   that mention it, including messages from people Toucan doesn't route, and their edits,

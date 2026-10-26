@@ -10,9 +10,9 @@ toucan upload /path/to/proof.mp4 --title '...' --json    # {"url": "...", "id": 
 ```
 
 Toucan runs the command in `settings.upload_command`. The default is `toucan-upload-loom`,
-from the optional `toucan-tools` package (`uv tool install toucan-tools`).
+from the optional `toucan-router-tools` package (`uv tool install toucan-router-tools`).
 
-Uploads are optional. Until `toucan-tools` is installed, `toucan doctor` lists `upload.command`
+Uploads are optional. Until `toucan-router-tools` is installed, `toucan doctor` lists `upload.command`
 as skipped. Once it is, `upload.login` is skipped until you sign in, and ok after. If you set your own
 `upload_command` and it isn't on PATH, `upload.command` is a todo.
 

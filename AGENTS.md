@@ -47,7 +47,7 @@ Stop when nothing is `todo` or `warn`.
 ### 1. Install and create the config
 
 ```sh
-uv tool install toucan-router                  # add toucan-teams-bot for Teams, toucan-tools for Loom or Sheets
+uv tool install toucan-router                  # add toucan-teams-bot for Teams, toucan-router-tools for Loom or Sheets
 toucan init --owner-name 'NAME' --timezone 'Area/City' --owner-whatsapp 'NUMBER@s.whatsapp.net' --json
 ```
 
@@ -97,7 +97,7 @@ Use `toucan setup-prompt KEY --standby` for a fallback thread on the other provi
 
 ### 5. Optional extras
 
-`toucan guide setup-upload` (Loom through `toucan-tools`), `toucan guide setup-sheets`,
+`toucan guide setup-upload` (Loom through `toucan-router-tools`), `toucan guide setup-sheets`,
 `toucan guide setup-alerts`, and `toucan config set settings.transcribe 'COMMAND'` for voice notes.
 
 ### 6. Go live, with the operator's OK
@@ -143,7 +143,7 @@ src/toucan/            the router: cli, config, core (request lifecycle), source
                        reads), storage, setup (init and doctor)
 bot/                   toucan-teams-bot: the Teams Bot Framework server, its message store and
                        the send/react/delete CLI
-tools/                 toucan-tools: toucan-upload-loom and toucan-sheets, optional agent tools
+tools/                 toucan-router-tools: toucan-upload-loom and toucan-sheets, optional agent tools
 examples/              the example config `toucan init` copies
 contrib/systemd/       user units for sync and the bot
 docs/                  setup pages and references
@@ -151,11 +151,11 @@ skills/                agent skills that ship with Toucan
 scripts/check-private  release gate against a private denylist
 ```
 
-- The router and toucan-tools use only the Python standard library. Keep it that way. The bot
+- The router and toucan-router-tools use only the Python standard library. Keep it that way. The bot
   is the only package with dependencies. The router must never import the bot or the tools:
   it reads the bot's store as a file and runs uploaders as commands.
 - Keep agent tools (uploads, spreadsheets, anything an awake agent uses) out of the router.
-  They belong in toucan-tools or their own package.
+  They belong in toucan-router-tools or their own package.
 - Tests: `.venv/bin/python -m pytest -q` at the root, and the same inside `bot/`. Use fictional
   data only: people `alice`, `bob`, `carol`, threads `project-a` and `project-b`, `example.com`,
   phone numbers starting `1555`, and all-zero GUIDs.

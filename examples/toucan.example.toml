@@ -1,7 +1,7 @@
 [settings]
 owner_name = "the owner"
 timezone = "UTC"
-upload_command = "toucan-upload-loom"  # Loom requires toucan-tools
+upload_command = "toucan-upload-loom"  # Loom requires toucan-router-tools
 # alert_url = "https://alerts.example.com/topic"
 # alert_url_file = "~/.config/toucan/alert-url"  # mode 600
 # owner_teams_id = "00000000-0000-0000-0000-000000000000"
