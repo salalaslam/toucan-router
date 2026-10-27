@@ -13,6 +13,7 @@ import httpx
 from . import media, store
 
 GRAPH = 'https://graph.microsoft.com/v1.0'
+BACKOFF_CAP = 900  # seconds; longest wait after a 401/403 in one chat
 
 
 def message_base(chat, message):
@@ -135,11 +136,12 @@ def failure(con, chat, error, settings):
               if status == 403 else f'HTTP {status}' if status else type(error).__name__)
     store.catchup_result(con, chat, error=reason, status=status)
     if status in (401, 403):
-        # Missing consent lasts until someone acts, so back off instead of
-        # retrying every pass: double from two intervals up to an hour.
+        # Missing consent lasts until someone acts, so back off instead of retrying every
+        # pass: double from two intervals up to 15 minutes. Consent itself may send the bot
+        # nothing, so the cap is how long a quiet chat waits after it.
         with con:
             failures = con.execute('SELECT auth_failures FROM catchup WHERE conversation_id=?', (chat,)).fetchone()[0] + 1
-            delay = min(3600, settings['catchup_interval_seconds'] * 2 ** failures)
+            delay = min(BACKOFF_CAP, settings['catchup_interval_seconds'] * 2 ** failures)
             con.execute('UPDATE catchup SET auth_failures=?,retry_at=? WHERE conversation_id=?',
                         (failures, time.time() + delay, chat))
 

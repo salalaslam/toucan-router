@@ -262,7 +262,7 @@ def teams_catchup(paths, routes, at, strict=False):
                 if row['http_status'] == 403:
                     found.append('Teams catch-up is not allowed in this chat (HTTP 403), so Toucan only sees '
                                  'messages that @mention it. Upgrade the Toucan Teams app to 1.1.0 or later and '
-                                 'accept its permissions in this chat')
+                                 'accept its permissions in this chat; catch-up retries within 15 minutes')
                 elif row['http_status'] == 401:
                     found.append('Teams catch-up was refused (HTTP 401); check the bot credentials and run '
                                  '`toucan-bot status`')

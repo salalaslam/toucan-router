@@ -141,7 +141,8 @@ configured intervals, for never-synced chats, and when the bot has not seen a ro
 An unavailable schema or store is a todo. `toucan sync` raises the same problems as alerts,
 one per route (`teams:catchup:ROUTE`), once until they recover. A 403 there means only
 @mentions reach Toucan in that chat; the alert says to upgrade the app and accept its
-permissions in the chat. A chat that has never synced is reported after a catch-up pass that
+permissions in the chat. Catch-up retries there within 15 minutes of consent, or at once
+when an ordinary message is pushed in the chat. A chat that has never synced is reported after a catch-up pass that
 ended after the bot first saw it, or at the latest three intervals (at least five minutes)
 after the later of bot start and first sight, with the catch-up task's error if it keeps
 failing. A restart therefore raises no false alert, and a failing catch-up still shows.

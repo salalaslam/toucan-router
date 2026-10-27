@@ -294,23 +294,18 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
             _remember_conversation(con, a)
             _store_message(con, a, deleted=True)
 
-    @app.on_install_add
-    async def on_install(ctx):
-        a = ctx.activity
-        if allowed(a):
-            _remember_conversation(con, a)
-
-            if creds:
-                await catchup.roster(con, app, store.get_conversation(con, a.conversation.id))
-
     @app.on_installation_update
     async def on_installation_update(ctx):
-        # Installs and upgrades (which carry a new consent) both arrive here; on_install_add
-        # alone never sees an upgrade.
+        # One handler for installs and upgrades: the SDK runs only the first matching handler
+        # unless it calls ctx.next(), and on_install_add never sees an upgrade. Either may bring
+        # new consent, so end any catch-up backoff; a removal does not.
         a = ctx.activity
         if allowed(a) and getattr(a, 'action', None) != 'remove':
+            _remember_conversation(con, a)
             with suppress(sqlite3.Error):
                 catchup.retry_now(con, a.conversation.id)
+            if creds:
+                await catchup.roster(con, app, store.get_conversation(con, a.conversation.id))
 
     @app.on_message_reaction
     async def on_message_reaction(ctx):

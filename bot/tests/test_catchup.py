@@ -1000,7 +1000,7 @@ def test_missing_consent_backs_off_per_chat_until_success_or_a_sign_of_access(st
         delays.append(round(row['retry_at'] - clock[0]))
         assert run() == 0 and 'healthy' in calls  # other chats keep their normal schedule
         clock[0] = row['retry_at'] + 1
-    assert delays == [min(3600, interval * 2 ** n) for n in range(1, 8)] and delays[-1] == 3600
+    assert delays == [min(900, interval * 2 ** n) for n in range(1, 8)] and max(delays) == 900
     run()
     catchup.retry_now(con, 'chat')  # what consent signals do; SDK wiring is tested in test_ingest
     denied[0] = False

@@ -171,9 +171,10 @@ scripts/check-private  release gate against a private denylist
   non-deleted snapshot restores a message. Application senders are always context only.
   Store mentions from both paths in one normalized `mentions_json` (text, kind, Entra or app
   ID; NULL when a delivery carried none) and bump the change sequence when it changes; the
-  router classifies them. Graph 401/403 back off per chat up to an hour; installs, upgrades
-  and ordinary pushed messages end the wait. Router sync alerts per routed chat, never for
-  unrouted conversations, and bounds its never-synced grace by the bot's `started_at`.
+  router classifies them. Graph 401/403 back off per chat up to 15 minutes; an install or an
+  ordinary pushed message ends the wait early (upgrades may emit no event). Router sync
+  alerts per routed chat, never for unrouted conversations, and bounds its never-synced
+  grace by the bot's `started_at`.
 - Download inline images only, with a byte cap and private retention-managed media. Shared
   files keep name and link and require the owner's Microsoft login. Never follow arbitrary
   chat HTML URLs with application tokens. Validate decoded IDs and bind Graph image endpoints
