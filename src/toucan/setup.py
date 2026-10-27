@@ -197,20 +197,14 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
         check('teams.fresh', 'teams', fresh, 'Teams bot heartbeat fresh' if fresh else 'Teams bot heartbeat unavailable or stale', 'setup-teams')
         try:
             coverage = sources.teams_coverage(paths, fx.now())
-            chats = coverage['chats']
-            known = {c['id'] for c in chats}
-            expected = {chat for route in cfg['routes'] if route['source'] == 'teams' for chat in route['chats']}
-            chats += [dict(id=chat, age=None, last_error='routed chat missing from bot conversations')
-                      for chat in sorted(expected - known)]
-            failures = [c for c in chats if c['last_error'] or c['age'] is None or
-                        c['age'] < -60 or c['age'] > max(300, coverage['interval_seconds'] * 3)]
-            reasons = ['%s: %s' % (redact(c['id'], show_ids), c['last_error'] or
-                       ('never synced' if c['age'] is None else 'last success %.0fs ago' % c['age'])) for c in failures]
-            ages = [c['age'] for c in chats if c['age'] is not None]
-            message = ('Catch-up failing or stale: ' + '; '.join(reasons) if failures else
+            # Only routed chats matter; the same check raises `toucan sync` alerts.
+            failures = sources.teams_catchup(paths, cfg['routes'], fx.now(), strict=True)
+            routed = {chat for route in cfg['routes'] if route['source'] == 'teams' for chat in route['chats']}
+            ages = [c['age'] for c in coverage['chats'] if c['id'] in routed and c['age'] is not None]
+            message = ('Catch-up failing or stale: ' + '; '.join(failures.values()) if failures else
                        'Catch-up healthy; oldest last success %.0fs ago' % max(ages) if ages else
-                       'No non-personal chats known; add the bot to each routed human chat')
-            add('teams.catchup', 'teams', 'warn' if failures else 'ok' if chats else 'todo', message, 'setup-teams')
+                       'No routed group chats need catch-up')
+            add('teams.catchup', 'teams', 'warn' if failures else 'ok', message, 'setup-teams')
             tasks = coverage['background']
             errors = []
             for name, task in tasks.items():

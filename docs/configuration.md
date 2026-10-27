@@ -25,7 +25,7 @@ Secrets never go in this file. Webhook URLs live in hook files and the alert URL
 | `alert_url_file` | none | Mode-600 file containing the alert URL, for secret ntfy topics. When set, it wins over `alert_url` and must contain a valid HTTP URL. |
 | `upload_command` | `"toucan-upload-loom"` | Command used by `toucan upload`. The default comes from the optional `toucan-router-tools` package. See [setup-upload.md](setup-upload.md). |
 | `transcribe` | none | Command that takes an audio file path and prints its transcript. Voice notes are transcribed before they reach a thread. |
-| `rate_per_hour` | 20 | Most WhatsApp messages Toucan sends to one recipient per hour, counting drafts and escalations to you. |
+| `rate_per_hour` | 20 | Most messages Toucan sends to one other person or chat per hour. Drafts and escalations to you are never limited. |
 | `rewake_minutes` | 15 | Wake an owner thread again after this long while requests stay unclaimed. |
 | `wake_gap_minutes` | 2 | Shortest gap between two wakes of the same thread. |
 | `max_wakes` | 3 | Wakes per request before Toucan stops and alerts. |

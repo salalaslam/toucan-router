@@ -20,6 +20,14 @@ VOICE_PER_SYNC = 5
 VOICE_BUDGET = 60    # seconds; no new note starts after this, so a sync stays well inside its 5-minute timeout
 
 
+# Download state the bot or wacli adds to an attachment; it is not an edit of the message.
+DOWNLOAD_FIELDS = ('local_path', 'download_status', 'http_status', 'download_error', 'retry_at')
+
+
+def attachment_content(value):
+    return [{k: v for k, v in a.items() if k not in DOWNLOAD_FIELDS} for a in json.loads(value or '[]')]
+
+
 def local(ts, zone='UTC'):
     return datetime.fromtimestamp(ts, ZoneInfo(zone)).strftime('%Y-%m-%d %H:%M %Z')
 
@@ -193,6 +201,11 @@ class App:
             problems.update(sources.health(self.paths, self.fx, now,
                                            {r['source'] for r in self.cfg['routes']},
                                            self.settings['whatsapp_stale_minutes']))
+            if any(r['source'] == 'teams' for r in self.cfg['routes']):
+                try:
+                    problems.update(sources.teams_catchup(self.paths, self.cfg['routes'], now))
+                except (OSError, ValueError, KeyError, sqlite3.Error):
+                    pass  # an unreadable or unsupported store is already a heartbeat problem
             mapping = {}
             if self.settings['owner_whatsapp'] or any(r['source'] == 'whatsapp' for r in self.cfg['routes']):
                 try:
@@ -251,11 +264,18 @@ class App:
                     if old:
                         if m['deleted'] and not m['text']:
                             m['text'] = old['text']
-                        changed = any(old[k] != m[k] for k in ('text', 'attachments_json', 'edited', 'deleted'))
+                        # A different reading of who is tagged changes what the thread should do with it;
+                        # None means the bot has no mention data and keeps the stored reading.
+                        retagged = (m.get('mentions_json') is not None and
+                                    json.loads(old['mentions_json'] or '[]') != json.loads(m['mentions_json']))
+                        changed = (retagged or any(old[k] != m[k] for k in ('text', 'edited', 'deleted')) or
+                                   attachment_content(old['attachments_json']) != attachment_content(m['attachments_json']))
+                        ready = (sum(bool(a.get('local_path')) for a in json.loads(m['attachments_json'] or '[]')) >
+                                 sum(bool(a.get('local_path')) for a in json.loads(old['attachments_json'] or '[]')))
                         self.db.execute('UPDATE messages SET text=?,attachments_json=?,edited=?,deleted=?,ts=?,last_seen=?,'
-                                        'sender_key=?,sender_raw=?,sender_name=?,is_owner=? WHERE id=?',
+                                        'sender_key=?,sender_raw=?,sender_name=?,is_owner=?,mentions_json=COALESCE(?,mentions_json) WHERE id=?',
                                         (m['text'], m['attachments_json'], m['edited'], m['deleted'], m['ts'] or old['ts'], now,
-                                         m['sender_key'], m['sender_raw'], m['sender_name'], m['is_owner'], old['id']))
+                                         m['sender_key'], m['sender_raw'], m['sender_name'], m['is_owner'], m.get('mentions_json'), old['id']))
                         if old['deferred_cutoff'] is not None and asks and m['ts'] >= old['deferred_cutoff']:
                             if not self.db.execute('SELECT 1 FROM requests WHERE message_id=?', (old['id'],)).fetchone():
                                 m['id'] = old['id']
@@ -268,6 +288,12 @@ class App:
                             for req in reqs:
                                 self.db.execute('UPDATE requests SET source_changed=1,change_pending=1,wakes=0,last_wake_at=NULL WHERE id=?', (req['id'],))
                                 self.record('source_changed', req['thread'], req['id'], deleted=bool(m['deleted']))
+                        elif ready:
+                            # A screenshot finished downloading: tell `toucan wait` and the inbox once,
+                            # without calling it an edit or giving the request a fresh wake budget.
+                            for req in self.rows(f'SELECT id,thread FROM requests WHERE message_id=? AND state IN {OPEN}', (old['id'],)):
+                                self.db.execute('UPDATE requests SET change_pending=1 WHERE id=?', (req['id'],))
+                                self.record('attachment_ready', req['thread'], req['id'])
                     else:
                         # Only incomplete Teams observations after seeding can be promoted.
                         # Seed context and known non-requesters remain context permanently.
@@ -820,7 +846,8 @@ class App:
             raise ValidationError('a valid owner_whatsapp phone JID is required')
         count = self.db.execute("SELECT count(*) FROM outbox WHERE to_chat=? AND state IN ('pending','sent','sending','uncertain') AND created_at>=?",
                                 (recipient, self.fx.now() - 3600)).fetchone()[0]
-        if count >= self.settings['rate_per_hour']:
+        # Drafts and escalations go to the owner and are never held back.
+        if kind == 'send' and count >= self.settings['rate_per_hour']:
             raise Refused('recipient hourly rate limit reached')
         out = insert(self.db, 'outbox', attempt_id=str(uuid.uuid4()), request_id=req, kind=kind,
                      source=source, to_chat=recipient, text=body, file=str(file) if file else None,

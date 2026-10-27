@@ -105,22 +105,24 @@ def test_nonzero_sender_does_not_advance_request_and_can_be_retried(world):
     assert world.app.get(req)['state'] == 'closed'
 
 
-def test_rate_limit_counts_sent_sending_and_uncertain_per_recipient(world):
+@pytest.mark.parametrize('state', ['sent', 'pending', 'sending', 'uncertain', 'failed'])
+def test_rate_limit_counts_each_live_delivery_state_per_recipient(world, state):
     world.seed()
-    requests = [world.request(str(i)) for i in range(4)]
-    claim = world.app.claim(requests, 'project-a')
-    world.cfg['settings']['rate_per_hour'] = 3
-    for req in requests[:3]:
-        world.app.deliver(req, claim, text='Answer')
-    outs = world.app.rows('SELECT * FROM outbox')
-    world.db.execute("UPDATE outbox SET state='sending' WHERE id=?", (outs[1]['id'],))
-    world.db.execute("UPDATE outbox SET state='uncertain' WHERE id=?", (outs[2]['id'],))
+    first, second = world.request('first'), world.request('second')
+    claim = world.app.claim([first, second], 'project-a')
+    world.cfg['settings']['rate_per_hour'] = 1
+    world.app.deliver(first, claim, text='Answer')
+    world.db.execute('UPDATE outbox SET state=?', (state,))
+    if state == 'failed':  # a failed attempt reached nobody, so it does not count
+        world.app.deliver(second, claim, text='Allowed')
+        assert len(world.sends) == 2
+        return
     with pytest.raises(Refused, match='rate limit'):
-        world.app.deliver(requests[3], claim, text='Too many')
-    assert len(world.sends) == 3
+        world.app.deliver(second, claim, text='Too many')
+    assert len(world.sends) == 1
     world.advance(3601)
-    world.app.deliver(requests[3], claim, text='Allowed now')
-    assert len(world.sends) == 4
+    world.app.deliver(second, claim, text='Allowed now')
+    assert len(world.sends) == 2
 
 
 def test_crash_after_sending_becomes_uncertain_and_never_resends(world):
@@ -530,19 +532,15 @@ def test_crash_before_sender_marks_pending_never_attempted_and_allows_retry(worl
 
 
 @pytest.mark.parametrize('kind', ['draft', 'escalation'])
-def test_owner_deliveries_share_recipient_hourly_limit(world, kind):
+def test_owner_drafts_and_escalations_are_never_held_by_the_hourly_limit(world, kind):
     world.cfg['people']['alice']['whatsapp'] = []
     world.seed()
-    first, second = world.request('first', teams=True), world.request('second', teams=True)
-    claim = world.app.claim([first, second], 'project-a')
+    requests = [world.request(name, teams=True) for name in ('first', 'second', 'third')]
+    claim = world.app.claim(requests, 'project-a')
     world.cfg['settings']['rate_per_hour'] = 1
-    world.app.deliver(first, claim, text='Draft answer')
-    with pytest.raises(Refused, match='hourly rate limit'):
-        world.app.deliver(second, claim, text='Another answer', escalation=kind == 'escalation')
-    assert len(world.sends) == 1
-    world.advance(3601)
-    world.app.deliver(second, claim, text='Answer', escalation=kind == 'escalation')
-    assert len(world.sends) == 2
+    for req in requests:
+        world.app.deliver(req, claim, text='Answer', escalation=kind == 'escalation')
+    assert len(world.sends) == 3 and {argv[5] for argv in world.sends} == {world.cfg['settings']['owner_whatsapp']}
 
 
 def test_failed_delivery_alerts_once_until_successful_retry(world):

@@ -85,6 +85,31 @@ def _remember_conversation(con, activity) -> None:
     con.commit()
 
 
+def _mentions(con, a):
+    """Push mentions in the Graph-normalized shape. Teams user IDs map to Entra IDs through the roster."""
+    result = []
+    for entity in a.entities or []:
+        if getattr(entity, 'type', None) != 'mention' or not getattr(entity, 'mentioned', None):
+            continue
+        to = entity.mentioned
+        kind, ident = 'user', None
+        if to.id == a.recipient.id or to.id.startswith('28:') or to.type == 'bot' or to.role == 'bot':
+            kind, ident = 'application', to.id
+        elif to.type == 'tag':
+            kind, ident = 'tag', to.id
+        elif to.type in ('channel', 'team') or to.id.lower() == a.conversation.id.lower():
+            kind, ident = 'conversation', to.id
+        else:
+            ident = to.aad_object_id
+            if not ident:
+                row = con.execute('SELECT aad_id FROM members WHERE conversation_id=? AND id=?',
+                                  (a.conversation.id, to.id)).fetchone()
+                ident = row['aad_id'] if row else None
+            ident = (ident or '').lower() or None
+        result.append(dict(text=store.plain_text(entity.text or '') or to.name, kind=kind, id=ident))
+    return result
+
+
 def _store_message(con, a, *, edited=False, deleted=False, restored=False, attachments=None):
     raw = getattr(a, 'text', None) or ''
     if not raw:
@@ -116,6 +141,7 @@ def _store_message(con, a, *, edited=False, deleted=False, restored=False, attac
         deleted_at=event_ts if deleted else None, restored=restored,
         modified_at=event_ts if edited or deleted or restored else ts,
         content_present=not restored or bool(raw or getattr(a, 'attachments', None)),
+        mentions_json=store.encode_mentions(_mentions(con, a)) if raw else None,
     )
 
 
@@ -129,6 +155,8 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
     token = config.setup_token()
     store.heartbeat(con)
     con.execute("INSERT OR REPLACE INTO meta VALUES ('catchup_interval_seconds',?)", (str(settings['catchup_interval_seconds']),))
+    # Lets the router bound its startup grace for chats catch-up has not reached yet.
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('started_at',?)", (store.now(),))
     con.execute("DELETE FROM meta WHERE key='task:maintenance'")
     con.commit()
 
@@ -242,6 +270,9 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
         _remember_conversation(con, a)
         # Persist before downloading so an interrupted download cannot lose the message.
         new = _store_message(con, a)
+        if not a.is_recipient_mentioned():
+            with suppress(sqlite3.Error):  # best effort; the backoff also expires on its own
+                catchup.retry_now(con, a.conversation.id)  # without consent, only mentions are pushed
         await images(a)
         text = store.plain_text(a.text or '')
         if new and getattr(a.conversation, "conversation_type", None) == "personal" and text.lower() in PING:
@@ -271,6 +302,15 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
 
             if creds:
                 await catchup.roster(con, app, store.get_conversation(con, a.conversation.id))
+
+    @app.on_installation_update
+    async def on_installation_update(ctx):
+        # Installs and upgrades (which carry a new consent) both arrive here; on_install_add
+        # alone never sees an upgrade.
+        a = ctx.activity
+        if allowed(a) and getattr(a, 'action', None) != 'remove':
+            with suppress(sqlite3.Error):
+                catchup.retry_now(con, a.conversation.id)
 
     @app.on_message_reaction
     async def on_message_reaction(ctx):

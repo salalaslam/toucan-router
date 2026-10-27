@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS messages (
  id INTEGER PRIMARY KEY, source TEXT, account TEXT, chat TEXT, msg_id TEXT, route TEXT,
  sender_key TEXT, sender_raw TEXT, sender_name TEXT, is_owner INTEGER, ts REAL, text TEXT,
  attachments_json TEXT, edited INTEGER, deleted INTEGER, first_seen REAL, last_seen REAL,
- deferred_cutoff REAL,
+ deferred_cutoff REAL, mentions_json TEXT,
  UNIQUE(source,account,chat,msg_id));
 CREATE TABLE IF NOT EXISTS requests (
  id INTEGER PRIMARY KEY, message_id INTEGER UNIQUE REFERENCES messages(id), route TEXT, thread TEXT,
@@ -99,7 +99,7 @@ def connect(path=None, dry=False):
 
 def migrate(db):
     db.execute("DELETE FROM meta WHERE key LIKE 'teams-ingestion:%'")
-    for table, fields in (('messages', (('deferred_cutoff', 'REAL'),)),
+    for table, fields in (('messages', (('deferred_cutoff', 'REAL'), ('mentions_json', 'TEXT'))),
                           ('requests', (('promise', 'TEXT'), ('promise_due', 'REAL')))):
         have = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
         for column, kind in fields:
