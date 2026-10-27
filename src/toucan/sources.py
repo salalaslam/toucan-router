@@ -169,7 +169,7 @@ def teams_store(paths):
         if not row or row['value'] != '4':
             raise ValueError('Teams bot store schema unsupported; restart or upgrade the bot')
         db.execute('SELECT id,type,name FROM conversations LIMIT 0')
-        db.execute('SELECT conversation_id,id,ts,sender_aad_id,sender_name,text,attachments_json,edited_at,deleted,sender_app_id,live_seen_at,graph_seen_at,first_source,change_seq FROM messages LIMIT 0')
+        db.execute('SELECT conversation_id,id,ts,sender_aad_id,sender_name,text,attachments_json,edited_at,deleted,sender_app_id,live_seen_at,graph_seen_at,first_source,change_seq,mentions_json FROM messages LIMIT 0')
         progress = dict(db.execute("SELECT key,value FROM meta WHERE key IN ('store_generation','change_sequence')"))
         if not progress.get('store_generation') or int(progress.get('change_sequence', '-1')) < 0:
             raise ValueError('Teams bot change tracking unavailable; restart or upgrade the bot')
@@ -200,6 +200,83 @@ def teams_coverage(paths, at):
                          for r in db.execute("SELECT key,value FROM meta WHERE key LIKE 'roster_error:%'")}
         return dict(chats=chats, interval_seconds=interval, ordinary_graph_only=missing,
                     background=tasks, roster_errors=roster_errors)
+    finally:
+        db.close()
+
+
+def mentions(items, owner):
+    """Who a Teams message tags: a bot (Toucan), the owner, the whole chat, or another person.
+    A user the bot could not identify, or any user while the owner's ID is unset, stays 'unknown'."""
+    owner = (owner or '').lower()
+    return [dict(name=item.get('text'), who='bot' if item.get('kind') == 'application' else
+                 'everyone' if item.get('kind') in ('conversation', 'tag') else
+                 'owner' if owner and item.get('id') == owner else
+                 'person' if owner and item.get('id') else 'unknown') for item in items]
+
+
+def teams_catchup(paths, routes, at, strict=False):
+    """Catch-up problems per routed Teams chat, read from the bot store; unrouted chats never count.
+
+    A fresh heartbeat does not prove ordinary messages arrive: without a working catch-up and
+    consent in the chat, only @mentions of the bot do. Authorization failures report at once,
+    other failures once a chat has gone three intervals without a success. Unless strict, a chat
+    that has never synced waits until a catch-up pass ends after the bot first saw it, or until
+    three intervals after the later of bot start and first sight, whichever comes first; a
+    catch-up task that keeps failing before any chat result is then reported too."""
+    teams_store(paths)
+    db = readonly(paths.bot_db)
+    try:
+        interval = db.execute("SELECT value FROM meta WHERE key='catchup_interval_seconds'").fetchone()
+        limit = max(300, int(interval['value']) * 3 if interval else 360)
+        task = db.execute("SELECT value FROM meta WHERE key='task:catchup'").fetchone()
+        task = json.loads(task['value']) if task else {}
+        passed = timestamp(task['last_success']) if task.get('last_success') else 0
+        started = db.execute("SELECT value FROM meta WHERE key='started_at'").fetchone()
+        try:
+            started = timestamp(started['value']) if started else 0
+        except ValueError:
+            started = 0
+        problems = {}
+        for route in routes:
+            if route['source'] != 'teams':
+                continue
+            found = []
+            for chat in route['chats']:
+                row = db.execute('SELECT c.type,c.first_seen,s.last_success,s.last_error,s.http_status FROM conversations c '
+                                 'LEFT JOIN catchup s ON s.conversation_id=c.id WHERE c.id=?', (chat,)).fetchone()
+                if not row:
+                    found.append('the Toucan bot has not seen this Teams chat; add the Toucan app to it')
+                    continue
+                if row['type'] == 'personal':
+                    continue  # the bot's own 1:1 chats get every message by push
+                error, age = row['last_error'], at - timestamp(row['last_success']) if row['last_success'] else None
+                try:
+                    seen = timestamp(row['first_seen'])
+                except ValueError:
+                    seen = 0
+                reached = passed > seen if seen else bool(passed)
+                # Grace for a first pass after start, bounded so a failing catch-up still shows.
+                overdue = bool(started or seen) and at - max(started, seen) > limit
+                if not error and task.get('last_error'):
+                    error = 'catch-up task failing: ' + task['last_error']
+                if row['http_status'] == 403:
+                    found.append('Teams catch-up is not allowed in this chat (HTTP 403), so Toucan only sees '
+                                 'messages that @mention it. Upgrade the Toucan Teams app to 1.1.0 or later and '
+                                 'accept its permissions in this chat')
+                elif row['http_status'] == 401:
+                    found.append('Teams catch-up was refused (HTTP 401); check the bot credentials and run '
+                                 '`toucan-bot status`')
+                elif age is not None and (age > limit or age < -60):
+                    found.append(f'Teams catch-up last succeeded {age / 60:.0f} min ago'
+                                 f'{" (" + error + ")" if error else ""}; messages that do not @mention Toucan '
+                                 'may be missing. Run `toucan-bot status`')
+                elif age is None and (strict or reached or overdue):
+                    found.append(f'Teams catch-up has never succeeded in this chat{" (" + error + ")" if error else ""}; '
+                                 'messages that do not @mention Toucan may be missing. Run `toucan-bot status`')
+            if found:
+                where = f' ({len(found)} of {len(route["chats"])} chats)' if len(route['chats']) > 1 else ''
+                problems['teams:catchup:' + route['name']] = (route.get('label') or route['name']) + where + ': ' + found[0]
+        return problems
     finally:
         db.close()
 
@@ -269,6 +346,9 @@ def teams_batch(paths, chat, since, tracked, owner_teams_id='', after=None):
                                # Zero marks unknown creation; sync/import must keep it context-only.
                                ts=timestamp(m['ts']) if m['ts'] else 0, text=text,
                                attachments_json=json.dumps(attachments),
+                               # None: the bot has no mention data for this row; keep what was stored.
+                               mentions_json=None if m['mentions_json'] is None else
+                               json.dumps(mentions(json.loads(m['mentions_json']), owner_teams_id)),
                                edited=int(bool(m['edited_at'])), deleted=int(bool(m['deleted']))))
         return result, latest
     finally:

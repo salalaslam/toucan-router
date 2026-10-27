@@ -44,6 +44,14 @@ open for a question or a partial answer.
 `send` starts a message with no request, for example to deliver a promise in a new message.
 It needs `--route` and the route's owner `--thread`.
 
+When a Teams request @mentions only other people (not the bot, the owner or the whole chat),
+its `inbox` header says it is for them and should be closed without a reply unless the text
+also asks Toucan. Mentions are classified only when `settings.owner_teams_id` is set. A later
+change in who a request tags (for example Graph identifying a pushed mention) counts as a
+change to an open request, like an edit. Screenshot download progress is not an edit: when an
+image becomes available, `toucan wait` and the inbox report the request once, without a fresh
+wake budget.
+
 The first successful read of each route seeds earlier history as context. Later messages
 become requests only if they arrive after both that seed and `active_from`. To pick up older
 unanswered messages on purpose, run `toucan import-pending --route NAME --since ISO`.
@@ -70,8 +78,10 @@ messages.
 
 ## Rate limits and the fallback thread
 
-Each sync reads the latest message of every owner thread from T3. When that message is a
-model rate-limit error, the turn has ended and nothing will restart it. Toucan alerts once,
+Each sync reads the latest run and message of every owner thread from T3. When the latest
+run failed at a usage or rate limit (Codex records this without writing a message), or the
+latest message is a model rate-limit error from the latest run, the turn has ended and nothing
+will restart it. A newer running or finished run clears the state. Toucan alerts once,
 then wakes the thread every `rewake_minutes` so it carries on when the limit clears. If the
 thread has `fallback = "OTHER"`, its unclaimed requests move to that thread after
 `fallback_minutes`, unless the fallback is rate-limited too.
@@ -97,8 +107,9 @@ message but the response never arrived), the delivery becomes `uncertain` and To
 it automatically. Further replies on that request are refused until a person has checked
 whether the message arrived. A delivery still `pending` after five minutes never reached the
 sender, so Toucan marks it failed, alerts, and allows a retry. Failed sends alert once each,
-stay visible in `status`, and are retried explicitly. Recipient limits
-count sent, sending and uncertain attempts from the last hour.
+stay visible in `status`, and are retried explicitly. The `rate_per_hour` limit applies to
+messages for other people and counts pending, sent, sending and uncertain attempts to that
+recipient from the last hour. Drafts and escalations to you are never held back.
 
 An unavailable source is skipped and reported, and the others still sync. Alerts fire once
 per problem until it recovers.
@@ -124,9 +135,17 @@ first-run recovery can contribute to this count. Application posts count in `gra
 but not `ordinary_graph_only`; they are context only in the router.
 
 `toucan doctor` adds `teams.catchup` and `teams.delivery` in the normal doctor item format.
-Catch-up warns after a failure or when the last success is older than the greater of five
-minutes and three configured intervals. Never-synced chats warn too; an unavailable schema
-or store is a todo. Missing ordinary push delivery warns that Toucan depends on catch-up
+`teams.catchup` covers routed chats only and names the route. It warns after an HTTP 401 or
+403, after other failures or no success for longer than the greater of five minutes and three
+configured intervals, for never-synced chats, and when the bot has not seen a routed chat.
+An unavailable schema or store is a todo. `toucan sync` raises the same problems as alerts,
+one per route (`teams:catchup:ROUTE`), once until they recover. A 403 there means only
+@mentions reach Toucan in that chat; the alert says to upgrade the app and accept its
+permissions in the chat. A chat that has never synced is reported after a catch-up pass that
+ended after the bot first saw it, or at the latest three intervals (at least five minutes)
+after the later of bot start and first sight, with the catch-up task's error if it keeps
+failing. A restart therefore raises no false alert, and a failing catch-up still shows.
+Conversations no route uses never raise router alerts. Missing ordinary push delivery warns that Toucan depends on catch-up
 latency. Zero observed gaps does not prove delivery, and a fresh heartbeat proves only that
 the process is running. Inspect these items separately from `teams.fresh`.
 

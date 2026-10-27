@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS messages (
   graph_seen_at TEXT,
   first_source TEXT NOT NULL DEFAULT 'live',
   change_seq INTEGER NOT NULL DEFAULT 0,
+  mentions_json TEXT,
   PRIMARY KEY (conversation_id, id)
 );
 CREATE TABLE IF NOT EXISTS catchup (
@@ -56,7 +57,8 @@ CREATE TABLE IF NOT EXISTS catchup (
   next_url TEXT,
   upper_bound TEXT,
   retry_at REAL,
-  last_request_at REAL
+  last_request_at REAL,
+  auth_failures INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS pending_media (
   conversation_id TEXT NOT NULL,
@@ -115,13 +117,14 @@ def connect(path: Path, *, timeout=5) -> sqlite3.Connection:
     con.execute('BEGIN IMMEDIATE')
     columns = {row['name'] for row in con.execute('PRAGMA table_info(messages)')}
     reset_changes = not had_messages or 'change_seq' not in columns
+    had_mentions = 'mentions_json' in columns
     for name, definition in dict(raw_html='TEXT', attachments_json="TEXT NOT NULL DEFAULT '[]'",
                                  quoted_json="TEXT NOT NULL DEFAULT '[]'", edited_at='TEXT',
                                  deleted='INTEGER NOT NULL DEFAULT 0', deleted_at='TEXT',
                                  restored_at='TEXT', modified_at='TEXT', sender_app_id='TEXT',
                                  live_seen_at='TEXT', graph_seen_at='TEXT',
                                  first_source="TEXT NOT NULL DEFAULT 'live'",
-                                 change_seq='INTEGER NOT NULL DEFAULT 0').items():
+                                 change_seq='INTEGER NOT NULL DEFAULT 0', mentions_json='TEXT').items():
         if name not in columns:
             con.execute(f'ALTER TABLE messages ADD COLUMN {name} {definition}')
     if 'raw_html' not in columns:
@@ -150,7 +153,8 @@ def connect(path: Path, *, timeout=5) -> sqlite3.Connection:
         con.execute('UPDATE messages SET live_seen_at=received_at')
         con.execute('UPDATE messages SET modified_at=COALESCE(deleted_at,edited_at,ts)')
     columns = {row['name'] for row in con.execute('PRAGMA table_info(catchup)')}
-    for name, kind in dict(next_url='TEXT', upper_bound='TEXT', retry_at='REAL', last_request_at='REAL').items():
+    for name, kind in dict(next_url='TEXT', upper_bound='TEXT', retry_at='REAL', last_request_at='REAL',
+                           auth_failures='INTEGER NOT NULL DEFAULT 0').items():
         if name not in columns:
             con.execute(f'ALTER TABLE catchup ADD COLUMN {name} {kind}')
     columns = {row['name'] for row in con.execute('PRAGMA table_info(pending_media)')}
@@ -168,17 +172,28 @@ def connect(path: Path, *, timeout=5) -> sqlite3.Connection:
         con.execute("INSERT OR REPLACE INTO meta VALUES ('change_sequence',?)", (str(len(rows)),))
     fields = ('ts', 'sender_aad_id', 'sender_name', 'sender_app_id', 'text', 'raw_html', 'mentioned',
               'reply_to_id', 'attachments_json', 'quoted_json', 'edited_at', 'deleted', 'deleted_at',
-              'restored_at', 'modified_at')
+              'restored_at', 'modified_at', 'mentions_json')
     changed = ' OR '.join(f'OLD.{field} IS NOT NEW.{field}' for field in fields)
     # A parent's text can supply a reply's displayed quote. Publish that
     # dependency in the same change instead of keeping tracked-row sync reads.
     for operation, condition in [('INSERT', ''), ('UPDATE', 'WHEN ' + changed)]:
+        existing = con.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                               ('message_change_' + operation,)).fetchone()
+        if existing and condition and any(f'NEW.{field}' not in existing[0] for field in fields):
+            con.execute(f'DROP TRIGGER message_change_{operation}')  # a newly tracked field
         con.execute(f'''CREATE TRIGGER IF NOT EXISTS message_change_{operation} AFTER {operation} ON messages {condition}
                         BEGIN
                           UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='change_sequence';
                           UPDATE messages SET change_seq=CAST((SELECT value FROM meta WHERE key='change_sequence') AS INTEGER)
                           WHERE conversation_id=NEW.conversation_id AND (id=NEW.id OR reply_to_id=NEW.id);
                         END''')
+    if not had_mentions:
+        # Earlier Graph rows kept raw mentions in quoted_json; live rows stay unknown (NULL).
+        for row in con.execute("SELECT conversation_id,id,quoted_json FROM messages WHERE quoted_json LIKE '%mentionText%'").fetchall():
+            found = graph_mentions([q for q in json.loads(row['quoted_json']) if isinstance(q, dict) and 'mentioned' in q])
+            if found:
+                con.execute('UPDATE messages SET mentions_json=? WHERE conversation_id=? AND id=?',
+                            (encode_mentions(found), row['conversation_id'], row['id']))
     con.execute('CREATE INDEX IF NOT EXISTS message_changes ON messages(conversation_id,change_seq)')
     con.execute('CREATE INDEX IF NOT EXISTS message_replies ON messages(conversation_id,reply_to_id)')
     con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', '4')")
@@ -283,10 +298,41 @@ def merge_attachments(old, new):
     return json.dumps(result)
 
 
+def graph_mentions(items):
+    """Normalize Graph chatMessage mentions to the stored shape: text, kind and ID."""
+    result = []
+    for item in items or []:
+        to = item.get('mentioned') or {}
+        kind = next((k for k in ('application', 'conversation', 'tag', 'user') if to.get(k)), 'user')
+        ident = (to.get(kind) or {}).get('id')
+        result.append(dict(text=item.get('mentionText') or (to.get(kind) or {}).get('displayName'), kind=kind,
+                           id=(ident or '').lower() or None if kind == 'user' else ident))
+    return result
+
+
+def encode_mentions(items):
+    """Teams may split one name into several adjacent mentions of the same account; join them."""
+    result = []
+    for item in items:
+        if result and item['id'] and (result[-1]['kind'], result[-1]['id']) == (item['kind'], item['id']):
+            result[-1]['text'] = ' '.join(t for t in (result[-1]['text'], item['text']) if t)
+        else:
+            result.append(dict(item))
+    return json.dumps(result)
+
+
+def merge_mentions(old, new, same_content):
+    """None means the delivery carried no mention data. A duplicate keeps the better-resolved list."""
+    if new is None or (same_content and old is not None and
+                       sum(bool(m['id']) for m in json.loads(new)) <= sum(bool(m['id']) for m in json.loads(old))):
+        return old
+    return new
+
+
 def record_message(con, *, conversation_id, id, ts, sender_aad_id, sender_name, text, mentioned,
                    reply_to_id, raw_html=None, attachments_json='[]', quoted_json='[]', edited_at=None,
                    deleted=False, deleted_at=None, restored=False, modified_at=None,
-                   sender_app_id=None, source='live', content_present=True) -> bool:
+                   sender_app_id=None, source='live', content_present=True, mentions_json=None) -> bool:
     """Merge the same (chat, message ID) from push and Graph without replaying old state.
 
     Only an explicit undelete or a newer Graph non-deleted snapshot clears a tombstone.
@@ -325,7 +371,8 @@ def record_message(con, *, conversation_id, id, ts, sender_aad_id, sender_name, 
                                   quoted_json=quoted_json if quoted_json != '[]' or not same_content else old['quoted_json'],
                                   reply_to_id=reply_to_id or old['reply_to_id'],
                                   edited_at=edited_at or old['edited_at'], modified_at=revision,
-                                  mentioned=int(bool(mentioned or old['mentioned'])))
+                                  mentioned=int(bool(mentioned or old['mentioned'])),
+                                  mentions_json=merge_mentions(old['mentions_json'], mentions_json, same_content))
                 if restored and not values['deleted']:
                     values.update(restored_at=revision, modified_at=revision)
             assignments = ','.join(k + '=?' for k in values if k not in ('conversation_id', 'id'))
@@ -336,7 +383,7 @@ def record_message(con, *, conversation_id, id, ts, sender_aad_id, sender_name, 
                           sender_aad_id=sender_aad_id.lower() if sender_aad_id else None, sender_name=sender_name,
                           text=text, mentioned=int(mentioned), reply_to_id=reply_to_id, received_at=seen,
                           raw_html=raw_html, attachments_json=attachments_json, quoted_json=quoted_json,
-                          edited_at=edited_at, deleted=int(deleted), deleted_at=deleted_at,
+                          mentions_json=mentions_json, edited_at=edited_at, deleted=int(deleted), deleted_at=deleted_at,
                           restored_at=revision if restored else None, modified_at=revision, sender_app_id=sender_app_id,
                           live_seen_at=seen if source == 'live' else None,
                           graph_seen_at=seen if source == 'graph' else None, first_source=source)
@@ -359,7 +406,7 @@ def catchup_result(con, chat, *, cursor=None, error=None, status=None):
 
 def coverage(con, at=None):
     at = at or datetime.now(timezone.utc).timestamp()
-    rows = con.execute("""SELECT c.id,s.cursor,s.last_success,s.last_error,s.http_status
+    rows = con.execute("""SELECT c.id,s.cursor,s.last_success,s.last_error,s.http_status,s.retry_at
                           FROM conversations c LEFT JOIN catchup s ON c.id=s.conversation_id
                           WHERE c.type IS NULL OR c.type!='personal'""").fetchall()
     chats = [dict(r) | {'last_success_age_seconds': at - instant(r['last_success'])

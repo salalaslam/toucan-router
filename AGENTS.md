@@ -169,6 +169,11 @@ scripts/check-private  release gate against a private denylist
   Graph createdDateTime repairs it independently of content revision order. Preserve content
   on notification-only undeletes. Persist deferred router eligibility without promoting seed history. Only explicit undelete or a newer Graph
   non-deleted snapshot restores a message. Application senders are always context only.
+  Store mentions from both paths in one normalized `mentions_json` (text, kind, Entra or app
+  ID; NULL when a delivery carried none) and bump the change sequence when it changes; the
+  router classifies them. Graph 401/403 back off per chat up to an hour; installs, upgrades
+  and ordinary pushed messages end the wait. Router sync alerts per routed chat, never for
+  unrouted conversations, and bounds its never-synced grace by the bot's `started_at`.
 - Download inline images only, with a byte cap and private retention-managed media. Shared
   files keep name and link and require the owner's Microsoft login. Never follow arbitrary
   chat HTML URLs with application tokens. Validate decoded IDs and bind Graph image endpoints

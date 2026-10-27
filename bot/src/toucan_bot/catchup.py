@@ -35,7 +35,8 @@ def normalise(message, bot_id):
                 text=store.plain_text(raw) if body.get('contentType') == 'html' else raw, raw_html=raw,
                 mentioned=any((m.get('mentioned', {}).get('application') or {}).get('id') == bot_id for m in mentions),
                 reply_to_id=message.get('replyToId'), attachments_json=json.dumps(attachments),
-                quoted_json=json.dumps(mentions), edited_at=message.get('lastEditedDateTime'),
+                mentions_json=store.encode_mentions(store.graph_mentions(mentions)),
+                edited_at=message.get('lastEditedDateTime'),
                 deleted=bool(message.get('deletedDateTime')), deleted_at=message.get('deletedDateTime'),
                 modified_at=message.get('lastModifiedDateTime') or message.get('createdDateTime'), source='graph')
 
@@ -105,7 +106,7 @@ async def sync_chat(con, client, token, chat, settings, bot_id):
             con.execute('UPDATE catchup SET next_url=?,retry_at=NULL WHERE conversation_id=?', (url, chat))
             con.commit()
     with con:
-        con.execute('UPDATE catchup SET next_url=NULL,upper_bound=NULL,retry_at=NULL WHERE conversation_id=?', (chat,))
+        con.execute('UPDATE catchup SET next_url=NULL,upper_bound=NULL,retry_at=NULL,auth_failures=0 WHERE conversation_id=?', (chat,))
         store.catchup_result(con, chat, cursor=upper)
 
 
@@ -119,20 +120,34 @@ async def sync(con, client, app, settings):
             raise ValueError('Graph token unavailable')
     except Exception as error:
         for chat in chats:
-            failure(con, chat['id'], error)
+            failure(con, chat['id'], error, settings)
         return
     for chat in chats:
         try:
             await sync_chat(con, client, str(token), chat['id'], settings, app.id)
         except Exception as error:
-            failure(con, chat['id'], error)
+            failure(con, chat['id'], error, settings)
 
 
-def failure(con, chat, error):
+def failure(con, chat, error, settings):
     status = getattr(getattr(error, 'response', None), 'status_code', None)
     reason = ('HTTP 403: no RSC grant for this chat or unsupported chat type; upgrade and consent in this chat'
               if status == 403 else f'HTTP {status}' if status else type(error).__name__)
     store.catchup_result(con, chat, error=reason, status=status)
+    if status in (401, 403):
+        # Missing consent lasts until someone acts, so back off instead of
+        # retrying every pass: double from two intervals up to an hour.
+        with con:
+            failures = con.execute('SELECT auth_failures FROM catchup WHERE conversation_id=?', (chat,)).fetchone()[0] + 1
+            delay = min(3600, settings['catchup_interval_seconds'] * 2 ** failures)
+            con.execute('UPDATE catchup SET auth_failures=?,retry_at=? WHERE conversation_id=?',
+                        (failures, time.time() + delay, chat))
+
+
+def retry_now(con, chat):
+    """A sign that access may be fixed (an ordinary pushed message or an app install) ends the backoff."""
+    with con:
+        con.execute('UPDATE catchup SET retry_at=NULL WHERE conversation_id=? AND http_status IN (401,403)', (chat,))
 
 
 async def roster(con, app, chat):

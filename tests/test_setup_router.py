@@ -48,8 +48,8 @@ def test_init_private_permissions_refusal_and_doctor_todos(tmp_path, monkeypatch
 def test_doctor_fully_configured_commands_and_redaction(world, tmp_path, monkeypatch, capsys):
     import sqlite3
     with sqlite3.connect(world.paths.bot_db) as con:
-        con.execute("INSERT INTO conversations VALUES ('group:chat','groupChat',NULL,'',NULL,'now','now')")
-        con.execute("INSERT INTO catchup (conversation_id,cursor,last_success,last_error,http_status) VALUES ('group:chat',NULL,'2026-10-17T07:00:00Z',NULL,NULL)")
+        con.execute("INSERT OR REPLACE INTO conversations VALUES ('group:chat','groupChat',NULL,'',NULL,'now','now')")
+        con.execute("INSERT OR REPLACE INTO catchup (conversation_id,cursor,last_success,last_error,http_status) VALUES ('group:chat',NULL,'2026-10-17T07:00:00Z',NULL,NULL)")
         for name in ('heartbeat', 'maintenance'):
             con.execute('INSERT INTO meta VALUES (?,?)', ('task:' + name, json.dumps(dict(
                 last_success='2026-10-17T07:00:00Z', last_error=None, last_failure=None,
@@ -431,16 +431,19 @@ def test_teams_doctor_reports_catchup_failure_staleness_and_push_gaps(world, mon
     monkeypatch.setattr('toucan.setup.shutil.which', lambda name: None)
     with sqlite3.connect(world.paths.bot_db) as con:
         con.execute("INSERT OR REPLACE INTO conversations VALUES ('group:chat','groupChat',NULL,'',NULL,'now','now')")
-        con.execute("INSERT INTO catchup (conversation_id,cursor,last_success,last_error,http_status) VALUES ('group:chat',NULL,NULL,'HTTP 403: no RSC grant or unsupported chat type',403)")
+        con.execute("INSERT OR REPLACE INTO catchup (conversation_id,cursor,last_success,last_error,http_status) VALUES ('group:chat',NULL,NULL,'HTTP 403: no RSC grant or unsupported chat type',403)")
     items = {i['id']: i for i in doctor(world.config_path, world.fx, world.paths)}
     assert items['teams.fresh']['status'] == 'ok'  # heartbeat cannot hide catch-up failure
     assert items['teams.catchup']['status'] == 'warn'
-    assert 'HTTP 403' in items['teams.catchup']['message']
+    assert 'group: ' in items['teams.catchup']['message'] and 'HTTP 403' in items['teams.catchup']['message']
     assert items['teams.catchup']['command'] == 'toucan-bot status --json'
     world.team('missed', first_source='graph', graph_seen_at=datetime.fromtimestamp(world.now - 600, timezone.utc).isoformat())
     with sqlite3.connect(world.paths.bot_db) as con:
         con.execute("UPDATE catchup SET last_error=NULL,http_status=NULL,last_success=?",
                     (datetime.fromtimestamp(world.now, timezone.utc).isoformat(),))
+    with sqlite3.connect(world.paths.bot_db) as con:  # chats no route uses are not Toucan's problem
+        con.execute("INSERT INTO conversations VALUES ('unrouted','groupChat',NULL,'',NULL,'now','now')")
+        con.execute("INSERT INTO catchup (conversation_id,last_error,http_status) VALUES ('unrouted','HTTP 403',403)")
     items = {i['id']: i for i in doctor(world.config_path, world.fx, world.paths)}
     assert items['teams.catchup']['status'] == 'ok'
     assert items['teams.delivery']['status'] == 'warn' and 'catch-up latency' in items['teams.delivery']['message']
@@ -448,7 +451,7 @@ def test_teams_doctor_reports_catchup_failure_staleness_and_push_gaps(world, mon
         con.execute("UPDATE catchup SET last_success=?", (datetime.fromtimestamp(world.now - 601, timezone.utc).isoformat(),))
         con.execute("UPDATE messages SET live_seen_at=?", (datetime.fromtimestamp(world.now, timezone.utc).isoformat(),))
     items = {i['id']: i for i in doctor(world.config_path, world.fx, world.paths)}
-    assert items['teams.catchup']['status'] == 'warn' and '601s ago' in items['teams.catchup']['message']
+    assert items['teams.catchup']['status'] == 'warn' and '10 min ago' in items['teams.catchup']['message']
     assert items['teams.delivery']['status'] == 'ok'
 
 

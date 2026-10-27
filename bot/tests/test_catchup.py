@@ -909,3 +909,106 @@ def test_image_work_commits_with_message_and_rolls_back_on_queue_failure(state, 
             attachments_json=json.dumps([dict(contentType='image/png', contentUrl=image.replace('/m1/', '/m2/'))]))))
     assert not con.execute("SELECT 1 FROM messages WHERE id='m2'").fetchone()
     assert con.execute('SELECT count(*) FROM pending_media').fetchone()[0] == 1
+
+
+def test_graph_mentions_fill_unknown_push_data_and_publish_the_change(state):
+    con, _ = state
+    bob = '00000000-0000-0000-0000-000000000002'
+    store.record_message(con, conversation_id='chat', id='m1', ts='2026-10-24T10:00:00+00:00', sender_aad_id=ALICE,
+                         sender_name='Alice Example', text='Hello & world', mentioned=False, reply_to_id=None)
+    assert con.execute("SELECT mentions_json FROM messages WHERE id='m1'").fetchone()[0] is None
+    before = int(con.execute("SELECT value FROM meta WHERE key='change_sequence'").fetchone()[0])
+    tags = [dict(id=0, mentionText='Bob', mentioned=dict(user=dict(id=bob.upper(), displayName='Bob Example'))),
+            dict(id=1, mentionText='Example', mentioned=dict(user=dict(id=bob.upper(), displayName='Bob Example'))),
+            dict(id=2, mentionText='Everyone', mentioned=dict(conversation=dict(id='chat', conversationIdentityType='chat'))),
+            dict(id=3, mentionText='Toucan', mentioned=dict(application=dict(id='bot', displayName='Toucan')))]
+    store.record_message(con, conversation_id='chat', **catchup.normalise(message(mentions=tags), 'bot'))
+    row = con.execute("SELECT mentions_json,mentioned,quoted_json,change_seq FROM messages WHERE id='m1'").fetchone()
+    assert json.loads(row['mentions_json']) == [dict(text='Bob Example', kind='user', id=bob),
+                                                dict(text='Everyone', kind='conversation', id='chat'),
+                                                dict(text='Toucan', kind='application', id='bot')]
+    assert row['mentioned'] == 1 and row['quoted_json'] == '[]' and row['change_seq'] > before
+    # A later duplicate with less identity data does not replace the resolved list.
+    seq = row['change_seq']
+    store.record_message(con, conversation_id='chat', id='m1', ts='2026-10-24T10:00:00Z', sender_aad_id=ALICE,
+                         sender_name='Alice Example', text='Hello & world', mentioned=False, reply_to_id=None,
+                         raw_html='<p>Hello &amp; world</p>', mentions_json=json.dumps([dict(text='Bob Example', kind='user', id=None)]))
+    row = con.execute("SELECT mentions_json,change_seq FROM messages WHERE id='m1'").fetchone()
+    assert len(json.loads(row['mentions_json'])) == 3 and row['change_seq'] == seq
+
+
+def test_store_upgrade_tracks_mentions_and_backfills_earlier_graph_rows(tmp_path):
+    path = tmp_path / 'bot.db'
+    with store.connect(path) as con:
+        store.record_message(con, conversation_id='chat', **catchup.normalise(message('graph'), 'bot'))
+        store.record_message(con, conversation_id='chat', id='live', ts='2026-10-24T10:00:00+00:00', sender_aad_id=ALICE,
+                             sender_name='Alice Example', text='Live', mentioned=False, reply_to_id=None)
+    # Recreate the 0.1.0 layout: no mentions column, mentions kept in quoted_json, and a
+    # change trigger that does not watch mentions.
+    graph_tag = [dict(id=0, mentionText='Bob', mentioned=dict(user=dict(id='00000000-0000-0000-0000-000000000002')))]
+    with sqlite3.connect(path) as con:
+        con.execute('DROP TRIGGER message_change_UPDATE')
+        con.execute('ALTER TABLE messages DROP COLUMN mentions_json')
+        con.execute("UPDATE messages SET quoted_json=? WHERE id='graph'", (json.dumps(graph_tag),))
+        con.execute("""CREATE TRIGGER message_change_UPDATE AFTER UPDATE ON messages WHEN OLD.text IS NOT NEW.text
+                       BEGIN UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='change_sequence'; END""")
+        generation = con.execute("SELECT value FROM meta WHERE key='store_generation'").fetchone()[0]
+        sequence = int(con.execute("SELECT value FROM meta WHERE key='change_sequence'").fetchone()[0])
+    with store.connect(path) as con:
+        rows = {r['id']: r for r in con.execute('SELECT id,mentions_json,change_seq FROM messages')}
+        assert con.execute("SELECT value FROM meta WHERE key='store_generation'").fetchone()[0] == generation
+        assert json.loads(rows['graph']['mentions_json']) == [dict(text='Bob', kind='user', id='00000000-0000-0000-0000-000000000002')]
+        assert rows['graph']['change_seq'] > sequence  # the router rereads it
+        assert rows['live']['mentions_json'] is None
+        con.execute("UPDATE messages SET mentions_json='[]' WHERE id='live'")
+        assert con.execute("SELECT change_seq FROM messages WHERE id='live'").fetchone()[0] > rows['graph']['change_seq']
+
+
+def test_missing_consent_backs_off_per_chat_until_success_or_a_sign_of_access(state, monkeypatch):
+    con, settings = state
+    clock = [time.time()]
+    monkeypatch.setattr(catchup, 'time', SimpleNamespace(time=lambda: clock[0]))
+    async def sleep(delay):
+        clock[0] += delay
+    monkeypatch.setattr(asyncio, 'sleep', sleep)
+    store.upsert_conversation(con, id='healthy', type='groupChat', name=None, service_url='', tenant_id=OWNER)
+    calls, denied = [], [True]
+
+    async def token(scope, tenant):
+        return 'graph-test-token'
+
+    def respond(request):
+        calls.append(request.url.path.split('/')[3])
+        if '/chat/' in request.url.path and denied[0]:
+            return httpx.Response(403)
+        return httpx.Response(200, json={'value': []})
+
+    def run():
+        async def go():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+                await catchup.sync(con, client, SimpleNamespace(id='bot', token_provider=SimpleNamespace(get_app_token=token)), settings)
+        calls.clear()
+        asyncio.run(go())
+        return calls.count('chat')
+
+    interval = settings['catchup_interval_seconds']
+    delays = []
+    for _ in range(7):
+        assert run() == 1
+        row = con.execute("SELECT * FROM catchup WHERE conversation_id='chat'").fetchone()
+        assert row['http_status'] == 403 and 'consent' in row['last_error']
+        delays.append(round(row['retry_at'] - clock[0]))
+        assert run() == 0 and 'healthy' in calls  # other chats keep their normal schedule
+        clock[0] = row['retry_at'] + 1
+    assert delays == [min(3600, interval * 2 ** n) for n in range(1, 8)] and delays[-1] == 3600
+    run()
+    catchup.retry_now(con, 'chat')  # what consent signals do; SDK wiring is tested in test_ingest
+    denied[0] = False
+    assert run() == 1
+    row = con.execute("SELECT * FROM catchup WHERE conversation_id='chat'").fetchone()
+    assert row['last_error'] is None and row['auth_failures'] == 0 and row['retry_at'] is None
+    denied[0] = True
+    clock[0] += interval
+    run()
+    row = con.execute("SELECT * FROM catchup WHERE conversation_id='chat'").fetchone()
+    assert round(row['retry_at'] - clock[0]) == interval * 2  # success reset the doubling

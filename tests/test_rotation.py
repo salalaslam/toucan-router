@@ -127,7 +127,7 @@ def test_rotation_requests_once_preserves_claim_and_wake_budget(world, status):
     world.t3_owner(status=status)
     # The latest run wins even when an older run still says running.
     with sqlite3.connect(world.paths.t3) as db:
-        db.execute('INSERT INTO orchestration_v2_projection_runs VALUES (?,?,?,?)', ('older', 'owner-thread', 0, 'running'))
+        db.execute('INSERT INTO orchestration_v2_projection_runs (run_id,thread_id,ordinal,status) VALUES (?,?,?,?)', ('older', 'owner-thread', 0, 'running'))
     report = world.app.sync()
     assert len(report['wakes']) == 1
     wake = report['wakes'][0]

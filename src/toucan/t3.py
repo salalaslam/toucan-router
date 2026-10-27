@@ -136,22 +136,47 @@ def thread_usage(paths, thread_id):
 
 
 # How Claude Code and the proxy report a model rate limit as the turn's last message.
+# Codex writes a typographic apostrophe ("You’ve").
 LIMITED = re.compile(r"(Agent terminated early due to an API error: )?API Error: .*\b(429|529|rate_limit_error|overloaded_error)\b"
-                     r"|You've hit your [\w ]*limit")
+                     r"|You['\u2019]ve hit your [\w ]*limit")
+# Failure codes T3 records on a run that a provider ended for quota or capacity.
+LIMIT_CODES = ('usageLimitExceeded', 'serverOverloaded', 'api_error_429', 'api_error_529')
 
 
 def rate_limited(paths, thread_id):
-    """When the thread's latest T3 message is a rate-limit error, that message's time; otherwise None."""
+    """When the thread's last turn stopped at a model rate limit, when that was; otherwise None.
+
+    The latest run decides first: a failed run can end without any chat message (Codex at its
+    usage limit, for one), and a newer running or finished run means an older limit message is
+    stale. Older T3 versions without these tables fall back to the latest message alone."""
     if not probe(paths):
         return None
     try:
         db = readonly(paths.t3)
         try:
-            row = db.execute("SELECT created_at,role,json_extract(payload_json,'$.text') AS text "
-                             "FROM orchestration_v2_projection_messages WHERE thread_id=? "
-                             "ORDER BY created_at DESC,rowid DESC LIMIT 1", (thread_id,)).fetchone()
+            try:
+                row = db.execute("SELECT created_at,role,run_id,json_extract(payload_json,'$.text') AS text "
+                                 "FROM orchestration_v2_projection_messages WHERE thread_id=? "
+                                 "ORDER BY created_at DESC,rowid DESC LIMIT 1", (thread_id,)).fetchone()
+                latest = db.execute('SELECT run_id,status,completed_at FROM orchestration_v2_projection_runs '
+                                    'WHERE thread_id=? ORDER BY ordinal DESC LIMIT 1', (thread_id,)).fetchone()
+                failure = latest and latest['status'] == 'failed' and db.execute(
+                    "SELECT json_extract(payload_json,'$.failure.class') AS class,json_extract(payload_json,'$.failure.code') AS code,"
+                    "json_extract(payload_json,'$.failure.message') AS message FROM orchestration_v2_projection_turn_items "
+                    "WHERE run_id=? AND type='error' AND status='failed' ORDER BY ordinal DESC LIMIT 1", (latest['run_id'],)).fetchone()
+            except sqlite3.OperationalError:
+                row = db.execute("SELECT created_at,role,NULL AS run_id,json_extract(payload_json,'$.text') AS text "
+                                 "FROM orchestration_v2_projection_messages WHERE thread_id=? "
+                                 "ORDER BY created_at DESC,rowid DESC LIMIT 1", (thread_id,)).fetchone()
+                latest = failure = None
         finally:
             db.close()
+        if latest:
+            if failure and latest['completed_at'] and (failure['class'] == 'usage_limit' or failure['code'] in LIMIT_CODES
+                                                        or LIMITED.match(failure['message'] or '')):
+                return timestamp(latest['completed_at'])
+            if latest['status'] not in FINISHED or row and row['run_id'] and row['run_id'] != latest['run_id']:
+                return None  # a turn is running, or the message belongs to an older one
         if row and row['role'] == 'assistant' and LIMITED.match(row['text'] or ''):
             return timestamp(row['created_at'])
         return None

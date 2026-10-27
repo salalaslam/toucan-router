@@ -34,7 +34,7 @@ def test_whatsapp_metadata_is_recent_alias_aware_and_readonly(world, capsys):
 def test_teams_discovery_lists_chat_members_without_bodies_or_service_urls(world, capsys):
     world.team('new')
     with sqlite3.connect(world.paths.bot_db) as db:
-        db.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?)',
+        db.execute('INSERT OR REPLACE INTO conversations VALUES (?,?,?,?,?,?,?)',
                    ('group:chat', 'groupChat', 'Project A', 'https://secret.example.com', None, '2026-10-17', '2026-10-17'))
         db.execute('INSERT INTO members VALUES (?,?,?,?)',
                    ('group:chat', 'member-a', '00000000-0000-0000-0000-000000000000', 'Alice Example'))

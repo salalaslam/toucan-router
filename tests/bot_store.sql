@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS messages (
   graph_seen_at TEXT,
   first_source TEXT NOT NULL DEFAULT 'live',
   change_seq INTEGER NOT NULL DEFAULT 0,
+  mentions_json TEXT,
   PRIMARY KEY (conversation_id, id)
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -46,7 +47,7 @@ CREATE TRIGGER message_insert AFTER INSERT ON messages BEGIN
 END;
 CREATE TRIGGER message_update AFTER UPDATE OF ts,sender_aad_id,sender_app_id,sender_name,text,
     raw_html,mentioned,reply_to_id,attachments_json,quoted_json,edited_at,deleted,deleted_at,
-    restored_at,modified_at ON messages BEGIN
+    restored_at,modified_at,mentions_json ON messages BEGIN
   UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='change_sequence';
   UPDATE messages SET change_seq=CAST((SELECT value FROM meta WHERE key='change_sequence') AS INTEGER)
     WHERE conversation_id=NEW.conversation_id AND (id=NEW.id OR reply_to_id=NEW.id);
@@ -68,7 +69,8 @@ CREATE TABLE IF NOT EXISTS sent (
 
 CREATE TABLE IF NOT EXISTS catchup (
   conversation_id TEXT PRIMARY KEY, cursor TEXT, last_success TEXT, last_error TEXT, http_status INTEGER,
-  next_url TEXT, upper_bound TEXT, retry_at REAL, last_request_at REAL
+  next_url TEXT, upper_bound TEXT, retry_at REAL, last_request_at REAL,
+  auth_failures INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS pending_media (

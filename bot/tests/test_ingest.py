@@ -4,7 +4,8 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
-from microsoft_teams.api import ConversationUpdateActivity, MessageActivity, MessageDeleteActivity, MessageUpdateActivity
+from microsoft_teams.api import (ConversationUpdateActivity, InstalledActivity, InstalledUpgradeActivity, MessageActivity,
+                                  MessageDeleteActivity, MessageUpdateActivity, UninstalledActivity)
 
 from toucan_bot import config, names, server, store
 
@@ -80,6 +81,59 @@ def test_only_bot_mentions_are_stripped_and_other_tenants_are_ignored(bot):
         assert len(messages) == 1
         assert messages[0]['text'] == 'Bob check this' and messages[0]['mentioned'] == 1
 
+
+
+def test_push_mentions_are_stored_with_entra_ids_for_the_router(bot):
+    receive, _ = bot
+    bob, owner = '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000009'
+    asyncio.run(receive(ConversationUpdateActivity, type='conversationUpdate',
+                        membersAdded=[dict(id='bob', aadObjectId=bob.upper(), name='Bob Example')]))
+    def mention(text, **account):
+        return dict(type='mention', text=f'<at>{text}</at>', mentioned=account)
+    asyncio.run(receive(text='<at>Bob</at> <at>Example</at> <at>Owner</at> <at>Everyone</at> <at>Ops</at> <at>Toucan</at> hi', entities=[
+        mention('Bob', id='bob', name='Bob Example'), mention('Example', id='bob', name='Bob Example'),
+        mention('Owner', id='owner', name='Owner', aadObjectId=owner), mention('Everyone', id='chat', name='Everyone'),
+        mention('Ops', id='tag-id', name='Ops', type='tag'), mention('Toucan', id='bot', name='Toucan'),
+        dict(type='clientInfo', locale='en-US')]))
+    asyncio.run(receive(id='plain', text='No tags'))
+    asyncio.run(receive(id='stranger', text='<at>Carol</at> please', entities=[mention('Carol', id='carol', name='Carol')]))
+    with store.connect(config.db_path()) as con:
+        stored = {r['id']: r['mentions_json'] for r in con.execute('SELECT id,mentions_json FROM messages')}
+    assert json.loads(stored['m1']) == [
+        dict(text='Bob Example', kind='user', id=bob), dict(text='Owner', kind='user', id=owner),
+        dict(text='Everyone', kind='conversation', id='chat'), dict(text='Ops', kind='tag', id='tag-id'),
+        dict(text='Toucan', kind='application', id='bot')]
+    assert json.loads(stored['plain']) == []
+    # Not in the roster yet: kept, but unresolved, so the router cannot call it someone else's.
+    assert json.loads(stored['stranger']) == [dict(text='Carol', kind='user', id=None)]
+
+
+@pytest.mark.parametrize('event', ['upgrade', 'install', 'ordinary message', 'mention only', 'uninstall'])
+def test_consent_signals_end_the_catchup_backoff_through_sdk_routing(bot, event):
+    import time
+    receive, _ = bot
+    asyncio.run(receive(id='first'))  # registers the conversation
+    with store.connect(config.db_path()) as con:
+        store.catchup_result(con, 'chat', error='HTTP 403', status=403)
+        con.execute('UPDATE catchup SET retry_at=?,auth_failures=3', (time.time() + 3600,))
+        con.commit()
+    install = dict(type='installationUpdate', text=None)
+    if event == 'upgrade':
+        asyncio.run(receive(InstalledUpgradeActivity, action='upgrade', **install))
+    elif event == 'install':
+        asyncio.run(receive(InstalledActivity, action='add', **install))
+    elif event == 'uninstall':
+        asyncio.run(receive(UninstalledActivity, action='remove', **install))
+    elif event == 'ordinary message':
+        asyncio.run(receive(id='second'))  # without consent Teams pushes only @mentions
+    else:
+        asyncio.run(receive(id='second', text='<at>Toucan</at> hi', entities=[
+            dict(type='mention', text='<at>Toucan</at>', mentioned=dict(id='bot', name='Toucan'))]))
+    with store.connect(config.db_path()) as con:
+        row = con.execute("SELECT retry_at,auth_failures FROM catchup WHERE conversation_id='chat'").fetchone()
+    cleared = event in ('upgrade', 'install', 'ordinary message')
+    assert (row['retry_at'] is None) == cleared
+    assert row['auth_failures'] == 3  # still doubles if access is in fact still missing
 
 def test_conversation_names_and_personal_members_resolve_with_router_aliases(bot, tmp_path):
     receive, _ = bot
@@ -639,8 +693,9 @@ def test_persistent_expiry_failure_does_not_stop_catchup_media_or_rosters(bot, m
             lists.append(request)
             if len(lists) == 1:
                 # Require a later scheduled pass, even when the first pass returns
-                # normally after recording a per-chat failure.
-                return httpx.Response(403)
+                # normally after recording a per-chat failure. (Authorization
+                # failures back off for longer; see test_catchup.)
+                return httpx.Response(500)
             return httpx.Response(200, json={'value': [dict(id='recovered', createdDateTime='2026-10-24T10:00:00Z',
                 lastModifiedDateTime='2026-10-24T10:00:00Z', body=dict(contentType='text', content='Recovered'),
                 **{'from': dict(user=dict(id=ALICE, displayName='Alice Example'))})]})

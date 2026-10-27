@@ -203,6 +203,11 @@ def dispatch(args, app):
             route = next((r for r in app.cfg['routes'] if r['name'] == m['route']), {})
             if m['request_id'] and route.get('reply_to'):
                 req += f', replies go to {app.cfg["people"][route["reply_to"]]["name"]}\'s WhatsApp, not this chat'
+            tags = json.loads(m['mentions_json'] or '[]')
+            others = [t['name'] for t in tags if t['who'] == 'person']
+            if m['request_id'] and others and all(t['who'] == 'person' for t in tags):
+                req += (f', tags {", ".join(json.dumps(n) for n in others)} and not Toucan: it is for them, so close it '
+                        'without replying unless the text also asks Toucan, even if you got the same task elsewhere')
             if m['request_id'] and m['promise'] and m['state'] in ('new', 'claimed', 'done'):
                 req += f', promised {json.dumps(m["promise"])} by {app.local(m["promise_due"])}'
             kind = ('OWNER ANSWER' if m['answers_request'] else 'OWNER REQUEST'

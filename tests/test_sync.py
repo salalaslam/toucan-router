@@ -669,3 +669,191 @@ def test_parent_quote_change_reaches_reply_after_removing_tracked_reads(world):
     world.app.sync()
     child = next(m for m in world.app.inbox('project-a') if m['request_id'] == request)
     assert child['text'] == 'Reply\n\nQuote:\n> After quote'
+
+
+def test_inbox_says_when_a_teams_request_tags_only_someone_else(world, monkeypatch, capsys):
+    from toucan.cli import main
+
+    def tags(*items):
+        return json.dumps([dict(text=text, kind=kind, id=ident) for text, kind, ident in items])
+    bob = ('Bob Example', 'user', '00000000-0000-0000-0000-000000000002')
+    world.seed()
+    world.team('for-bob', mentions_json=tags(bob))
+    world.team('for-both', mentions_json=tags(bob, ('Toucan', 'application', 'bot')))
+    world.team('for-owner', mentions_json=tags(('Example Owner', 'user', 'owner-entra')))
+    world.team('for-all', mentions_json=tags(bob, ('Everyone', 'conversation', 'group:chat')))
+    world.team('unresolved', mentions_json=tags(('Carol', 'user', None)))
+    world.team('untagged', mentions_json='[]')
+    world.team('unknown')  # mention data the bot never had, e.g. a migrated row
+    assert len(world.app.sync()['created']) == 7
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    assert main(['inbox', '--thread', 'project-a'], effects=world.fx, paths=world.paths) == 0
+    flagged = [line for line in capsys.readouterr().out.splitlines() if 'and not Toucan: it is for them' in line]
+    assert len(flagged) == 1 and 'tags "Bob Example"' in flagged[0]
+    assert 'close it without replying unless the text also asks Toucan' in flagged[0]
+    stored = {r['msg_id']: r['mentions_json'] for r in world.app.rows("SELECT msg_id,mentions_json FROM messages")}
+    assert json.loads(stored['for-owner']) == [dict(name='Example Owner', who='owner')]
+    assert stored['unknown'] is None
+    # The bot learning about a mention later is a change the router picks up; missing data keeps it.
+    world.team('unknown', mentions_json=tags(bob))
+    world.app.sync()
+    world.team('for-bob', mentions_json=None)
+    world.app.sync()
+    stored = {r['msg_id']: r['mentions_json'] for r in world.app.rows("SELECT msg_id,mentions_json FROM messages")}
+    assert json.loads(stored['unknown']) == json.loads(stored['for-bob']) == [dict(name='Bob Example', who='person')]
+    # Without the owner's Teams ID nobody can be told apart from the owner, so nothing is flagged.
+    world.cfg['settings']['owner_teams_id'] = ''
+    world.team('later-for-bob', mentions_json=tags(bob))
+    world.app.sync()
+    assert world.app.rows("SELECT mentions_json FROM messages WHERE msg_id='later-for-bob'")[0]['mentions_json'] == \
+        json.dumps([dict(name='Bob Example', who='unknown')])
+
+
+def test_routed_teams_catchup_failures_alert_once_per_route_until_recovery(world):
+    from datetime import datetime, timezone
+
+    def iso(ts):
+        return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+
+    def catchup(chat, **values):
+        with sqlite3.connect(world.paths.bot_db) as con:
+            con.execute('INSERT INTO catchup (conversation_id) VALUES (?) ON CONFLICT DO NOTHING', (chat,))
+            for key, value in values.items():
+                con.execute(f'UPDATE catchup SET {key}=? WHERE conversation_id=?', (value, chat))
+
+    def alerts():
+        return {a['key']: a['text'] for a in world.alerts()}
+    world.seed()
+    with sqlite3.connect(world.paths.bot_db) as con:
+        con.execute("INSERT INTO conversations VALUES ('unrouted:chat','groupChat',NULL,'',NULL,'2026-10-01T00:00:00Z','now')")
+    catchup('unrouted:chat', last_error='HTTP 403: no RSC grant', http_status=403)
+    assert world.app.sync()['problems'] == {}  # a chat no route uses never alerts
+    # Missing consent in a routed chat: the heartbeat is fresh, yet only @mentions arrive.
+    catchup('group:chat', last_error='HTTP 403: no RSC grant', http_status=403)
+    world.app.sync()
+    world.advance(60)
+    world.app.sync()
+    assert list(alerts()) == ['teams:catchup:group']
+    text = alerts()['teams:catchup:group']
+    assert text.startswith('group: ') and 'HTTP 403' in text and 'only sees messages that @mention it' in text
+    assert 'Upgrade the Toucan Teams app to 1.1.0' in text and 'accept its permissions in this chat' in text
+    assert len([p for p in world.posts if p[0].startswith('http://127.')]) == 1
+    catchup('group:chat', last_error=None, http_status=None, last_success=iso(world.now))
+    world.app.sync()
+    assert alerts() == {}
+    # Other failures alert only once the chat has gone three intervals without a success.
+    catchup('group:chat', last_error='HTTP 500', http_status=500)
+    world.advance(300)
+    assert 'teams:catchup:group' not in world.app.sync()['problems']
+    world.advance(61)
+    assert 'last succeeded 6 min ago (HTTP 500)' in world.app.sync()['problems']['teams:catchup:group']
+
+
+def test_never_synced_routed_chat_alerts_after_bounded_grace_or_a_catchup_pass(world):
+    from datetime import datetime, timezone
+
+    def meta(key, value):
+        with sqlite3.connect(world.paths.bot_db) as con:
+            con.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (key, value))
+    world.seed()
+    with sqlite3.connect(world.paths.bot_db) as con:
+        con.execute('DELETE FROM catchup')  # a migrated store: the chat is old, catch-up never ran
+        con.execute("UPDATE conversations SET first_seen='2026-10-01T00:00:00Z'")
+    meta('started_at', datetime.fromtimestamp(world.now - 60, timezone.utc).isoformat())  # the bot just restarted
+    assert 'teams:catchup:group' not in world.app.sync()['problems']  # its first pass may still be running
+    # The catch-up task keeps failing before it records any chat result; the heartbeat stays fresh.
+    meta('task:catchup', json.dumps(dict(last_success=None, last_error='ValueError', failures=9)))
+    world.advance(4 * 60)
+    assert 'teams:catchup:group' not in world.app.sync()['problems']
+    world.advance(2 * 60)
+    problems = world.app.sync()['problems']
+    assert 'health:teams:stale' not in problems
+    assert problems['teams:catchup:group'].startswith('group: Teams catch-up has never succeeded')
+    assert 'catch-up task failing: ValueError' in problems['teams:catchup:group']
+    # A pass that ended after the bot first saw the chat reports it without waiting for the grace.
+    meta('started_at', datetime.fromtimestamp(world.now, timezone.utc).isoformat())
+    meta('task:catchup', json.dumps(dict(last_success=datetime.fromtimestamp(world.now, timezone.utc).isoformat(), last_error=None)))
+    assert 'never succeeded' in world.app.sync()['problems']['teams:catchup:group']
+    with sqlite3.connect(world.paths.bot_db) as con:
+        con.execute('DELETE FROM conversations')
+    assert 'add the Toucan app' in world.app.sync()['problems']['teams:catchup:group']
+
+
+CODEX_LIMIT = dict(**{'class': 'usage_limit'}, code='usageLimitExceeded', retryable=None,
+                   message='You’ve hit your usage limit. Visit https://example.com/usage to purchase more credits.')
+
+
+@pytest.mark.parametrize('signal', ['failed-run', 'curly-message'])
+def test_codex_usage_limit_is_detected_from_failed_runs_and_curly_apostrophes(world, signal):
+    world.seed()
+    req = world.request()
+    world.t3('wake', world.now, 'Toucan woke you', run=1)
+    if signal == 'failed-run':
+        world.t3_run(1, 'failed', world.now, CODEX_LIMIT)  # Codex leaves no assistant message
+    else:
+        world.t3_run(1, 'completed', world.now)
+        world.t3('error', world.now, CODEX_LIMIT['message'], role='assistant', run=1)
+    assert 'limited:project-a' in world.app.sync()['problems']
+    world.advance(15 * 60)
+    world.app.sync()
+    assert world.app.get(req)['wakes'] == 1  # the carry-on wake does not use the budget
+    assert 'carry on' in world.hooks()[-1]['summary']
+    # A newer turn, running and then finished, ends the limit even before it writes anything.
+    world.t3_run(2, 'running', world.now)
+    assert 'limited:project-a' not in world.app.sync()['problems']
+    with sqlite3.connect(world.paths.t3) as db:
+        db.execute("UPDATE orchestration_v2_projection_runs SET status='completed' WHERE ordinal=2")
+    assert 'limited:project-a' not in world.app.sync()['problems']
+
+
+def test_failed_runs_for_other_reasons_are_not_rate_limits(world):
+    world.seed()
+    world.t3_run(1, 'failed', world.now, {'class': 'transport_error', 'code': 'oom_kill', 'message': 'Killed: out of memory.'})
+    assert 'limited:project-a' not in world.app.sync()['problems']
+
+
+def test_claimed_request_is_told_when_its_mentions_are_read_differently(world):
+    unresolved = json.dumps([dict(text='Bob Example', kind='user', id=None)])
+    resolved = json.dumps([dict(text='Bob Example', kind='user', id='00000000-0000-0000-0000-000000000002')])
+    world.seed()
+    world.team('ask', mentions_json=unresolved)
+    req = world.app.sync()['created'][0]
+    world.app.claim([req], 'project-a')
+    for mentions in (None, unresolved):  # no mention data, or the same reading: nothing to tell
+        world.team('ask', mentions_json=mentions)
+        world.app.sync()
+        assert world.app.get(req)['change_pending'] == 0
+    world.team('ask', mentions_json=resolved)  # Graph identifies the tag as someone else
+    world.app.sync()
+    row = world.app.get(req)
+    assert row['state'] == 'claimed' and row['change_pending'] == 1 and row['source_changed'] == 1
+    assert world.app.wait('project-a', 1)['requests'] == [req]
+
+
+def test_screenshot_downloads_are_not_edits_and_readiness_is_told_once(world):
+    image = dict(contentType='image/png', contentUrl='https://example.com/image')
+
+    def attach(**download):
+        world.team('shot', attachments_json=json.dumps([image | download]))
+        world.app.sync()
+        return world.app.get(req)
+    world.seed()
+    world.team('shot', attachments_json=json.dumps([image]))
+    req = world.app.sync()['created'][0]
+    world.app.claim([req], 'project-a')
+    world.db.execute('UPDATE requests SET wakes=3,last_wake_at=? WHERE id=?', (world.now, req))
+    for attempt in range(3):  # repeated failures only update download bookkeeping
+        row = attach(download_status='pending', http_status=503, download_error='HTTPStatusError', retry_at=world.now + attempt)
+        assert (row['change_pending'], row['source_changed'], row['wakes']) == (0, 0, 3)
+    row = attach(download_status='available', local_path='/media/shot.png')
+    assert (row['change_pending'], row['source_changed'], row['wakes']) == (1, 0, 3)
+    assert json.loads(world.app.rows("SELECT attachments_json FROM messages WHERE msg_id='shot'")[0]['attachments_json'])[0]['local_path'] == '/media/shot.png'
+    assert len(world.app.rows("SELECT * FROM events WHERE kind='attachment_ready'")) == 1
+    world.app.inbox('project-a')
+    row = attach(download_status='available', local_path='/media/shot.png')
+    assert row['change_pending'] == 0  # told once
+    world.team('shot', attachments_json=json.dumps([image | dict(local_path='/media/shot.png'),
+                                                    dict(contentType='reference', name='brief.pdf', contentUrl='https://example.com/brief')]))
+    world.app.sync()
+    row = world.app.get(req)
+    assert (row['change_pending'], row['source_changed'], row['wakes']) == (1, 1, 0)  # a real attachment change
