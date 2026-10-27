@@ -148,7 +148,8 @@ def rate_limited(paths, thread_id):
 
     The latest run decides first: a failed run can end without any chat message (Codex at its
     usage limit, for one), and a newer running or finished run means an older limit message is
-    stale. Older T3 versions without these tables fall back to the latest message alone."""
+    stale. A message without a run ID counts only if it is newer than the latest run's request.
+    Older T3 versions without these tables fall back to the latest message alone."""
     if not probe(paths):
         return None
     try:
@@ -158,7 +159,7 @@ def rate_limited(paths, thread_id):
                 row = db.execute("SELECT created_at,role,run_id,json_extract(payload_json,'$.text') AS text "
                                  "FROM orchestration_v2_projection_messages WHERE thread_id=? "
                                  "ORDER BY created_at DESC,rowid DESC LIMIT 1", (thread_id,)).fetchone()
-                latest = db.execute('SELECT run_id,status,completed_at FROM orchestration_v2_projection_runs '
+                latest = db.execute('SELECT run_id,status,requested_at,completed_at FROM orchestration_v2_projection_runs '
                                     'WHERE thread_id=? ORDER BY ordinal DESC LIMIT 1', (thread_id,)).fetchone()
                 failure = latest and latest['status'] == 'failed' and db.execute(
                     "SELECT json_extract(payload_json,'$.failure.class') AS class,json_extract(payload_json,'$.failure.code') AS code,"
@@ -175,8 +176,11 @@ def rate_limited(paths, thread_id):
             if failure and latest['completed_at'] and (failure['class'] == 'usage_limit' or failure['code'] in LIMIT_CODES
                                                         or LIMITED.match(failure['message'] or '')):
                 return timestamp(latest['completed_at'])
-            if latest['status'] not in FINISHED or row and row['run_id'] and row['run_id'] != latest['run_id']:
-                return None  # a turn is running, or the message belongs to an older one
+            if not row or latest['status'] not in FINISHED:
+                return None  # a turn is running
+            if (row['run_id'] != latest['run_id'] if row['run_id'] else
+                    not latest['requested_at'] or timestamp(row['created_at']) < timestamp(latest['requested_at'])):
+                return None  # the message belongs to an older turn
         if row and row['role'] == 'assistant' and LIMITED.match(row['text'] or ''):
             return timestamp(row['created_at'])
         return None

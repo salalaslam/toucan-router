@@ -39,8 +39,10 @@ def bot(tmp_path, monkeypatch):
         if model is MessageUpdateActivity and payload.get('text') is None:
             payload.pop('text')  # SDK defaults an absent notification body to an empty string.
         activity = model.model_validate(payload)
-        for handler in app.router.select_handlers(activity):
-            await handler(SimpleNamespace(activity=activity))
+        # The SDK's own middleware chain: a handler that does not call ctx.next() stops the rest.
+        processor = app.activity_processor
+        ctx = await processor._build_context(activity, SimpleNamespace(service_url=activity.service_url), [])
+        await processor.execute_middleware_chain(ctx, app.router.select_handlers(activity))
 
     return receive, web
 

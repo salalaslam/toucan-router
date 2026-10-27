@@ -53,7 +53,7 @@ class World:
             CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, active_provider_thread_id TEXT);
             CREATE TABLE orchestration_v2_projection_provider_threads (provider_thread_id TEXT PRIMARY KEY, thread_id TEXT, payload_json TEXT);
             CREATE TABLE orchestration_v2_projection_runs (run_id TEXT PRIMARY KEY, thread_id TEXT, ordinal INTEGER, status TEXT,
-                                                           completed_at TEXT);
+                                                           completed_at TEXT, requested_at TEXT);
             CREATE TABLE orchestration_v2_projection_turn_items (turn_item_id TEXT PRIMARY KEY, run_id TEXT, ordinal INTEGER,
                                                                  type TEXT, status TEXT, payload_json TEXT);
             CREATE TABLE orchestration_v2_projection_subagents (subagent_id TEXT PRIMARY KEY, thread_id TEXT, status TEXT);
@@ -174,12 +174,13 @@ active_from = "2026-10-17T00:00:00+05:00"
         done = datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
         run = f'run-{thread}-{ordinal}'
         with sqlite3.connect(self.paths.t3) as db:
-            db.execute('INSERT INTO orchestration_v2_projection_runs VALUES (?,?,?,?,?)', (run, thread, ordinal, status, done))
+            db.execute('INSERT INTO orchestration_v2_projection_runs VALUES (?,?,?,?,?,?)', (run, thread, ordinal, status, done, done))
             if failure:
                 db.execute('INSERT INTO orchestration_v2_projection_turn_items VALUES (?,?,?,?,?,?)',
                            ('error-' + run, run, 1, 'error', 'failed', json.dumps(dict(title='Usage limit reached', failure=failure))))
 
     def t3_owner(self, thread='owner-thread', task='task:/project-a', used=412000, status='completed', pending=None):
+        from datetime import datetime, timezone
         from urllib.parse import quote
         self.hook.write_text(f'https://hook.invalid/api/hooks/{quote(task, safe="")}/SECRET-TOKEN')
         payload = dict(contextUsage=dict(usedTokens=used, maxTokens=1000000), pendingBackgroundTasks=pending or [])
@@ -188,8 +189,9 @@ active_from = "2026-10-17T00:00:00+05:00"
             db.execute('INSERT OR REPLACE INTO orchestration_v2_projection_threads VALUES (?,?)', (thread, 'provider-' + thread))
             db.execute('INSERT OR REPLACE INTO orchestration_v2_projection_provider_threads VALUES (?,?,?)',
                        ('provider-' + thread, thread, json.dumps(payload)))
-            db.execute('INSERT OR REPLACE INTO orchestration_v2_projection_runs (run_id,thread_id,ordinal,status) VALUES (?,?,?,?)',
-                       ('run-' + thread, thread, 1, status))
+            requested = datetime.fromtimestamp(self.now, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+            db.execute('INSERT OR REPLACE INTO orchestration_v2_projection_runs (run_id,thread_id,ordinal,status,requested_at) '
+                       'VALUES (?,?,?,?,?)', ('run-' + thread, thread, 1, status, requested))
 
     def team(self, msg_id, sender='00000000-0000-0000-0000-000000000001', ts=None, **values):
         from datetime import datetime, timezone

@@ -103,10 +103,11 @@ A message-list HTTP 403 means no RSC grant in that chat or an unsupported chat t
 membership, the per-chat upgrade and consent, tenant policy, and app identity. Do not assume
 that a tenant-wide protected-API approval is needed for RSC. The bot records the status
 without advancing that chat's cursor. A 401 or 403 backs that chat off: two intervals, then
-doubling up to an hour, while other chats keep their schedule. A success resets it. An
-ordinary (non-@mention) message pushed in that chat, or installing or upgrading the app
-there, ends the wait at once, since without consent only @mentions are pushed. `toucan sync` alerts for the
-route until catch-up works there.
+doubling up to 15 minutes, while other chats keep their schedule. A success resets it. After
+consent, catch-up resumes in that chat within 15 minutes, or at once when an ordinary
+(non-@mention) message is pushed there, since without consent only @mentions are pushed.
+Do not rely on the upgrade itself: a permission-only upgrade may send the bot no event.
+`toucan sync` alerts for the route until catch-up works there.
 
 ### Catch-up and message state
 

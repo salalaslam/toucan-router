@@ -857,3 +857,19 @@ def test_screenshot_downloads_are_not_edits_and_readiness_is_told_once(world):
     world.app.sync()
     row = world.app.get(req)
     assert (row['change_pending'], row['source_changed'], row['wakes']) == (1, 1, 0)  # a real attachment change
+
+
+def test_old_unlinked_limit_message_stays_stale_after_a_newer_run_finishes(world):
+    world.seed()
+    world.t3('error', world.now, LIMIT, role='assistant')  # older T3 rows carry no run ID
+    assert 'limited:project-a' in world.app.sync()['problems']
+    world.advance(60)
+    world.t3_run(1, 'running', world.now)
+    assert 'limited:project-a' not in world.app.sync()['problems']
+    world.advance(60)
+    with sqlite3.connect(world.paths.t3) as db:
+        db.execute("UPDATE orchestration_v2_projection_runs SET status='completed' WHERE ordinal=1")
+    assert 'limited:project-a' not in world.app.sync()['problems']
+    # An unlinked limit message written during that run still counts.
+    world.t3('error-again', world.now, LIMIT, role='assistant')
+    assert 'limited:project-a' in world.app.sync()['problems']
