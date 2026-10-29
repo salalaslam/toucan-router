@@ -8,7 +8,7 @@ import subprocess
 from importlib.resources import files
 from pathlib import Path
 
-from . import sources, t3
+from . import router, sources, t3
 from .config import PHONE, ValidationError, hook_warning, load, warnings
 from .effects import Effects, local_run
 from .storage import account_warning, private_dir, readonly, state_path
@@ -128,6 +128,8 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
             'email.command': 'toucan guide setup-email', 'email.fresh': 'notmuch new',
             'transcribe.command': 'toucan guide setup-whatsapp', 'upload.command': 'uv tool install toucan-router-tools',
             'upload.login': 'toucan-upload-loom login', 'sync.timer': 'toucan enable',
+            'router.commands': "toucan config set settings.router_commands '[[\"COMMAND\", \"ARG\"]]'",
+            'router.health': 'toucan status --json',
         }
         command = commands.get(id, f'toucan guide {doc}')
         if id.startswith('thread:'):
@@ -278,6 +280,33 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
             except (OSError, subprocess.SubprocessError, TimeoutError, ValueError, AttributeError):
                 pass
             check('upload.login', 'media', logged_in, 'Loom logged in' if logged_in else 'Uploads not set up; optional', doc, 'skip')
+    if router.routes(cfg):
+        commands = settings['router_commands']
+        missing = [c[0] for c in commands if not shutil.which(c[0])]
+        add('router.commands', 'router', 'warn' if missing or not commands else 'ok',
+            'No router_commands: requests the rules cannot place are logged as router unavailable' if not commands else
+            'Router commands not on PATH: ' + ', '.join(missing) if missing else f'{len(commands)} router commands available',
+            'configuration')
+        status, message = 'skip', 'Router has not run yet'
+        if state_path().is_file():
+            try:
+                db = readonly(state_path())
+                try:
+                    info = router.health(db, cfg, fx.now())
+                finally:
+                    db.close()
+                stuck = info['oldest_pending'] is not None and fx.now() - info['oldest_pending'] > 1800
+                bad = info['stage_error'] or info['unavailable_streak'] >= router.UNAVAILABLE_ALERT or stuck
+                status = 'warn' if bad else 'ok' if info['last_run'] else 'skip'
+                ago = lambda ts: f'{(fx.now() - ts) / 60:.0f} min ago' if ts else 'never'
+                message = (f'Router shadow on {", ".join(info["routes"])}: last run {ago(info["last_run"])}, '
+                           f'last router command success {ago(info["last_success"])}, {info["pending"]} pending, '
+                           f'{info["failures_24h"]} failures in 24h' +
+                           (f'; last run failed ({info["stage_error"]["error"]})' if info['stage_error'] else '') +
+                           ('; requests have waited over 30 min for a decision' if stuck else ''))
+            except (OSError, sqlite3.Error, ValueError, KeyError):
+                status, message = 'skip', 'Router state unavailable; it appears after the next sync'
+        add('router.health', 'router', status, message, 'operations')
     add('alerts', 'alerts', 'ok' if settings['alert_url'] else 'skip', 'Alert URL configured' if settings['alert_url'] else 'Alerts optional; no URL configured', 'setup-alerts')
     if not shutil.which('systemctl'):
         add('sync.timer', 'automation', 'skip', 'systemctl unavailable', 'operations')

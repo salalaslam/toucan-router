@@ -33,11 +33,17 @@ in the wake-up prompt and in `~/.config/toucan/toucan.toml` under `[threads.KEY]
 | Work is finished, the reply is pending | `toucan done REQ --claim ID --note "..."` |
 | No reply is needed | `toucan close REQ --claim ID --reason "..."` |
 | Someone else should take it | `toucan release REQ --claim ID` |
+| It belongs to another owner thread | `toucan forward REQ --to THREAD --thread KEY --reason "..."` (add `--claim ID` if you claimed it) |
 | Risky, out of scope, or needs the owner | `toucan escalate REQ --claim ID --note "..."` |
 | The owner answered an escalation in this thread | `toucan resume REQ --thread KEY` |
 | A proof video to share | `toucan upload FILE --title "..."`, then put the link in the reply |
 | A spreadsheet to share | `toucan-sheets create "Title" --values rows.json` (if toucan-router-tools is installed), then put its URL in the reply |
 | A message with no request (delivering a promise) | `toucan send --route NAME --thread KEY --text "..."` |
+
+Forward only to a thread you know handles that project (the keys are in `toucan.toml` under
+`[threads]` and `[projects]`), and don't reply first. If you aren't sure where it belongs, keep
+it or escalate. A message the inbox marks as belonging to another thread is context, not
+yours to answer.
 
 Escalate anything involving production, money, credentials or commitments to clients.
 Don't promise work that waits on an escalation; say it's waiting on a decision.

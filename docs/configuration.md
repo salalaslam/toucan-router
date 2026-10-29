@@ -37,6 +37,12 @@ Secrets never go in this file. Webhook URLs live in hook files and the alert URL
 | `fallback_minutes` | 5 | Hand a rate-limited thread's unclaimed request to its fallback after this long. |
 | `rotate_tokens` | 200000 | Ask an idle owner thread to hand over to a fresh thread at this context size. |
 | `rotate_stall_minutes` | 60 | Alert when a handover hasn't finished after this long. |
+| `router_general_thread` | none | Thread key that gets off-topic requests. Required once any route has `router` other than `"off"`. |
+| `router_commands` | `[]` | Commands the router tries in order, each an array such as `["claude", "-p"]`. Each reads the prompt on stdin and must print one JSON object. Empty means requests the rules can't place are logged as `router unavailable`. |
+| `router_timeout_seconds` | 60 | Longest one router command may run. At most `router_budget_seconds`. |
+| `router_budget_seconds` | 90 | Router command time per sync, at most 180. Requests left over are decided in a later sync. |
+| `router_history` | 20 | How many of the person's earlier messages in the chat the router sees. |
+| `followup_minutes` | 120 | A message that names no project, sent this soon after the same person's last request in the chat, follows that request. |
 
 `ntfy` is accepted as an old name for `alert_url`.
 
@@ -122,6 +128,27 @@ One table per T3 owner thread. See [setup-t3.md](setup-t3.md).
 | `fallback` | no | Another thread key that takes requests while this one is rate-limited. |
 | `rotate_tokens` | no | Overrides `settings.rotate_tokens` for this thread. |
 
+## `[projects.KEY]`
+
+One table per project the router can pick. `KEY` is how the router names it. See
+[operations](operations.md#the-router).
+
+| Key | Required | Meaning |
+|---|---|---|
+| `name` | yes | The project's name. |
+| `aliases` | no | Other names people use for it, such as a repo or product name. |
+| `description` | no | One line the router's AI step reads. |
+| `thread` | yes | Owner thread key that handles the project. |
+
+The key, the name and each alias match whole words in a message, in any case, so `portal`
+doesn't match `portals`. Two projects may not share a name or alias. `toucan remove thread`
+refuses while a project or `router_general_thread` uses that thread.
+
+```sh
+toucan add project project-a --name 'Project A' --alias portal --description 'The customer portal' --thread project-a --json
+toucan remove project project-a --json
+```
+
 ## `[[routes]]`
 
 One entry per group of chats that belongs to one thread.
@@ -141,6 +168,7 @@ One entry per group of chats that belongs to one thread.
 | `reply_via_whatsapp` | no | Teams `act` routes without `post_as_bot`. Send the reply to the asker's WhatsApp instead of drafting it to you. |
 | `reply_to` | no | WhatsApp `act` routes. Send every reply to this person's WhatsApp instead of the chat (for groups with clients in them). |
 | `reply_prefix` | no | Text added at the top of every reply and send on this route. |
+| `router` | no | `"off"` (default) or `"shadow"`: log which thread the router would pick for each request, without changing where it goes. `"live"` is reserved and refused for now. |
 
 ## Where Teams replies go
 

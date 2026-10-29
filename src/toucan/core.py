@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import sources, t3
+from . import router, sources, t3
 from .config import PHONE, Refused, ValidationError, hook_warning, prefixed, reply_phone
 from .effects import Effects
 from .storage import account_warning, event, insert, private_dir
@@ -173,6 +173,7 @@ class App:
         m['text'] = ('Voice note, transcribed automatically:\n' + row['text'] if row['text'] else
                      'Voice note; automatic transcription failed. Transcribe the attached file before answering '
                      '(if no file is attached, download it with `wacli --read-only media download`).')
+        m['own_text'] = m['text']
         return True
 
     def read_route(self, route, chat, since, tracked):
@@ -263,7 +264,7 @@ class App:
                         continue  # a voice note becomes a request once transcribe() has its text
                     if old:
                         if m['deleted'] and not m['text']:
-                            m['text'] = old['text']
+                            m['text'], m['own_text'] = old['text'], old['own_text']
                         # A different reading of who is tagged changes what the thread should do with it;
                         # None means the bot has no mention data and keeps the stored reading.
                         retagged = (m.get('mentions_json') is not None and
@@ -273,9 +274,11 @@ class App:
                         ready = (sum(bool(a.get('local_path')) for a in json.loads(m['attachments_json'] or '[]')) >
                                  sum(bool(a.get('local_path')) for a in json.loads(old['attachments_json'] or '[]')))
                         self.db.execute('UPDATE messages SET text=?,attachments_json=?,edited=?,deleted=?,ts=?,last_seen=?,'
-                                        'sender_key=?,sender_raw=?,sender_name=?,is_owner=?,mentions_json=COALESCE(?,mentions_json) WHERE id=?',
+                                        'sender_key=?,sender_raw=?,sender_name=?,is_owner=?,mentions_json=COALESCE(?,mentions_json),'
+                                        "quoted_ids=COALESCE(NULLIF(?,'[]'),quoted_ids),own_text=? WHERE id=?",
                                         (m['text'], m['attachments_json'], m['edited'], m['deleted'], m['ts'] or old['ts'], now,
-                                         m['sender_key'], m['sender_raw'], m['sender_name'], m['is_owner'], m.get('mentions_json'), old['id']))
+                                         m['sender_key'], m['sender_raw'], m['sender_name'], m['is_owner'], m.get('mentions_json'),
+                                         m.get('quoted_ids'), m.get('own_text'), old['id']))
                         if old['deferred_cutoff'] is not None and asks and m['ts'] >= old['deferred_cutoff']:
                             if not self.db.execute('SELECT 1 FROM requests WHERE message_id=?', (old['id'],)).fetchone():
                                 m['id'] = old['id']
@@ -360,9 +363,15 @@ class App:
                                  "AND retry.to_chat=o.to_chat AND (o.request_id IS NOT NULL OR (retry.text=o.text AND retry.file IS o.file)))"):
                 reason = 'sender never attempted; safe to retry' if out['error'] == 'sender never attempted; pending expired' else 'delivery failed; inspect outbox error and retry'
                 problems[f'failed:{out["id"]}'] = f'Outbox {out["id"]}: {reason}'
+            problems.update(router.problems(self))
             self.reconcile_alerts(problems)
             self.db.execute("INSERT OR REPLACE INTO meta VALUES ('last_sync',?)", (str(now),))
             self.record('sync', ingested=report['ingested'], created=len(report['created']), dry=self.dry)
+        # After the transaction: router commands can take seconds, and wakes have already gone out.
+        try:
+            report['router'] = router.run(self, now)
+        except Exception as error:
+            report['problems']['router:failed'] = router.failed(self, error)
         return report
 
     def owner_answers(self, mapping, now, problems):
@@ -686,6 +695,28 @@ class App:
             return dict(thread=key, old=old, hook_file=str(hook_file), task_id=task, t3_db=t3db, origin=origin,
                         requests=requests, successor_setup=setup, instructions=instructions)
 
+    def forward(self, req, target, thread, reason='', claim=None):
+        """Move a request to another owner thread, like a rate-limit handover. A claimed request
+        needs its current claim and goes over unclaimed; the target is woken as for a new request."""
+        if thread not in self.cfg['threads'] or target not in self.cfg['threads']:
+            raise ValidationError('unknown thread')
+        if target == thread:
+            raise Refused('the request is already in that thread')
+        with self.transaction():
+            row = self.get(req, thread=thread)
+            if row['state'] == 'claimed':
+                if not claim or row['claim_id'] != claim:
+                    raise Refused('request is claimed; pass its current --claim, or release it first')
+            elif row['state'] != 'new':
+                raise Refused(f'only a new or claimed request can be forwarded, not one that is {row["state"]}')
+            if self.db.execute("SELECT 1 FROM outbox WHERE request_id=? AND state IN ('pending','sending')", (req,)).fetchone():
+                raise Refused('delivery in progress')
+            self.db.execute("UPDATE requests SET thread=?,state='new',claim_id=NULL,claimed_at=NULL,change_pending=0,"
+                            "wakes=0,last_wake_at=NULL WHERE id=?", (target, req))
+            self.record('forwarded', target, req, from_thread=thread, to_thread=target, reason=reason,
+                        was_claimed=row['state'] == 'claimed')
+        return dict(request=req, from_thread=thread, thread=target, state='new')
+
     def claim(self, ids, thread):
         with self.transaction():
             requests = [self.get(req) for req in ids]
@@ -914,12 +945,16 @@ class App:
                   {r['route'] for r in self.rows("SELECT DISTINCT route FROM requests WHERE thread=? AND state!='closed'", (thread,))})
         marks = ','.join('?' for _ in routes) or 'NULL'
         with self.transaction():
-            messages = self.rows(f'SELECT m.*,r.id AS request_id,r.state,r.promise,r.promise_due,a.request_id AS answers_request FROM messages m '
+            # A request another thread holds (forwarded or handed over) is context here, not this thread's work.
+            messages = self.rows(f'SELECT m.*,CASE WHEN r.thread=? THEN r.id END AS request_id,'
+                                 f'CASE WHEN r.thread=? THEN r.state END AS state,r.promise,r.promise_due,'
+                                 f'CASE WHEN r.thread!=? THEN r.id END AS other_request,'
+                                 f'CASE WHEN r.thread!=? THEN r.thread END AS other_thread,a.request_id AS answers_request FROM messages m '
                                  f'LEFT JOIN requests r ON r.message_id=m.id LEFT JOIN owner_answers a ON a.message_id=m.id '
                                  f'LEFT JOIN requests ar ON ar.id=a.request_id '
                                  f'WHERE m.route IN ({marks}) AND (m.ts>=? OR (m.ts=0 AND m.first_seen>=?) OR r.state IN {OPEN} OR ar.state IN {OPEN}) '
                                  f'ORDER BY m.chat,m.ts,m.id',
-                                 (*sorted(routes), self.fx.now() - self.settings['context_hours'] * 3600,
+                                 (thread, thread, thread, thread, *sorted(routes), self.fx.now() - self.settings['context_hours'] * 3600,
                                   self.fx.now() - self.settings['context_hours'] * 3600))
             # The thread has now seen any edit or owner answer, so `toucan wait` stops reporting it.
             self.db.execute(f'UPDATE requests SET change_pending=0 WHERE thread=? AND change_pending=1 AND state IN {OPEN}', (thread,))

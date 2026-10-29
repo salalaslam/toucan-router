@@ -29,6 +29,7 @@ toucan react 42 --claim CLAIM --emoji eyes            # Teams routes with post_a
 toucan done 43 --claim CLAIM --note 'Finished; waiting on a decision.'
 toucan close 43 --claim CLAIM --reason 'No reply needed.'
 toucan release 43 --claim CLAIM                       # back to the inbox
+toucan forward 43 --to project-b --thread project-a --reason 'Billing, not the portal'
 toucan escalate 43 --claim CLAIM --note 'Needs a production deploy.'
 toucan send --route team-chat --thread project-a --text 'The test results are ready.'
 toucan upload /tmp/proof.mp4 --title 'Fix walkthrough'
@@ -85,6 +86,122 @@ will restart it. A newer running or finished run clears the state. Toucan alerts
 then wakes the thread every `rewake_minutes` so it carries on when the limit clears. If the
 thread has `fallback = "OTHER"`, its unclaimed requests move to that thread after
 `fallback_minutes`, unless the fallback is rate-limited too.
+
+## Forwarding a request
+
+`toucan forward REQ --to THREAD --thread KEY [--reason TEXT]` moves a request that thread KEY
+holds to another configured thread. A new request moves as it is. A claimed request needs its
+current `--claim`; otherwise the command refuses (exit 3) and says to pass the claim or
+release it first. Either way the request arrives at the target as new and unclaimed, with a
+fresh wake budget, and keeps any promise already made. Done, escalated and closed requests,
+and requests with a delivery in progress, can't be forwarded.
+
+The `forwarded` event records the old thread, the new one and the reason. The target's
+`toucan wait` reports it at once and the next sync wakes the target. Its inbox then shows that
+chat, and it can claim, reply and react into the original chat as usual. The original thread
+still sees the chat, but its inbox labels the message as belonging to the other thread, and
+it can't claim it. Requests handed to a fallback thread show the same way.
+
+## The router
+
+Each route normally sends every request to its one `thread`. The router is being built so
+that Toucan can pick the thread for each request instead. For now it runs only in shadow
+mode: set `router = "shadow"` on a route and it decides and logs where each new request would
+go. Requests still go to the route's thread, and wakes and replies don't change.
+
+It needs `[projects.KEY]` tables, `settings.router_general_thread`, and usually
+`settings.router_commands` (see [configuration](configuration.md)). Requests created before a
+route's router was switched on are not decided.
+
+For each new request it tries these steps in order and stops at the first that answers:
+
+1. **Reply or quote.** The message replies to or quotes a request's message, or a reply
+   Toucan sent for one: that request's thread. WhatsApp uses the quoted message ID wacli
+   stores. Teams uses the bot store's `reply_to_id`, quoted-reply entities and message
+   references. Email uses `In-Reply-To`, read from the message file. Without that linkage
+   the step is skipped.
+2. **Project named.** Project keys, names and aliases found in the message's own text, not in
+   quoted text (for email, lines starting with `>` and everything after an `On ... wrote:`
+   line). Exactly one project: its thread. Two or more go to step 4.
+3. **Follow-up.** No project named, and the same person had a request in the same chat whose
+   message was at most `followup_minutes` earlier: that request's thread. In a group this
+   follows the person, not the chat. A WhatsApp 1:1's phone and `@lid` chats count as one chat.
+4. **Router command.** One stateless call per request. The prompt lists the projects, the
+   person's last `router_history` messages in the chat, their open requests and threads, and
+   the new message, all marked as untrusted data. Each command in `router_commands` runs in
+   turn with the prompt on stdin. The first that exits 0 and prints a valid answer wins.
+   Anything else (non-zero exit, timeout, rate-limit text, invalid JSON, unknown project keys,
+   unexpected fields or kinds) moves on to the next command. A command's output is only ever
+   read as a label; nothing in it is run or followed.
+5. **Unavailable.** No commands configured, or all failed: the decision is `ask`, with reason
+   `router unavailable`.
+
+The answer must be one JSON object, optionally inside one Markdown code fence:
+
+```json
+{"kind": "project", "projects": ["project-a"], "parts": [], "reason": "names the portal"}
+```
+
+| `kind` | Meaning | Decided thread |
+|---|---|---|
+| `project` | exactly one project | that project's thread |
+| `split` | independent asks for two or more projects, one `parts` entry each | each part's project thread, with its text |
+| `depends` | one task across projects; the first listed is the one whose code changes | the first project's thread |
+| `offtopic` | not about any project | `router_general_thread` |
+| `unsure` | can't tell; `projects` may list candidates | none: the decision is `ask` |
+
+When a step uses an earlier request's thread, it uses that request's own decision while
+routing is shadowed, unless a thread has forwarded the request, in which case it uses where it
+went.
+
+Example commands, each with tools turned off:
+
+```toml
+router_commands = [
+  ["claude", "-p", "--model", "claude-haiku-5-5", "--tools", "", "--no-session-persistence"],
+  ["codex", "exec", "--model", "gpt-6-luna", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "-"],
+]
+```
+
+### Timing and failures
+
+The router runs at the end of `toucan sync`, after the sync transaction has committed and its
+wakes and alerts have gone out. It holds no database lock while a command runs, so replies and
+`toucan wait` carry on. It starts a command only if the command's full `router_timeout_seconds`
+still fits in `router_budget_seconds` for this sync. Requests it doesn't reach are decided,
+oldest first, in a later sync, and a command that already failed for a request isn't tried
+again for it. A timed-out command is killed with its whole process group. The timer unit's
+syncs never overlap, and a lease in the state database stops a manual `toucan sync` from
+deciding the same requests at the same time. A sync can take up to `router_budget_seconds`
+longer, which delays the next sync's wakes by as much, so keep the budget small if wake
+latency matters.
+
+Any router error is recorded as a `route_shadow_failed` event and a `router:failed` problem
+without failing the rest of the sync. A request whose own data breaks the rules is decided as
+`error` so it isn't retried every minute. Three requests in a row on which every command
+failed raise a `router:unavailable` alert. `toucan sync --dry-run` reports which requests
+the rules would decide and which would need a command, and calls no command and writes
+nothing.
+
+Events: `route_shadow` (one per decision, with step, kind, decided threads, reason, command
+index, latency and each failed attempt's outcome), `route_shadow_deferred`, `route_shadow_failed`
+and `route_marked`. `toucan status` has a `router` object (last run, last command success,
+failure count over 24 hours, pending decisions), and `toucan doctor` adds `router.commands` and
+`router.health`.
+
+### Reviewing decisions
+
+```sh
+toucan router review --since 24h --json            # also --route NAME, --undecided-only
+toucan router mark 42 wrong --note 'Billing is project-b' --json
+toucan router stats --since 2026-10-29T00:00:00+00:00 --json
+```
+
+`review` lists each decision with the request, time, route, person key, message text,
+the thread the request really went to, the decided threads or parts, step, kind, reason and
+verdict. `--undecided-only` lists only decisions not yet marked right or wrong. `mark` records
+a verdict (exit 3 if the request has no decision). `stats` counts decisions by step, kind,
+decision and verdict, and gives the share of marked decisions that are wrong.
 
 ## Thread rotation
 

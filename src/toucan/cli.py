@@ -7,7 +7,7 @@ import sys
 
 from .config import Refused, ValidationError, load, timestamp, warnings
 from .core import App
-from . import agentsetup, configedit, discovery, services, setup
+from . import agentsetup, configedit, discovery, router, services, setup
 from .effects import Effects
 from .storage import connect
 
@@ -15,7 +15,7 @@ from .storage import connect
 def parser():
     p = argparse.ArgumentParser(prog='toucan')
     commands = p.add_subparsers(dest='command', required=True)
-    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'rotate', 'init', 'doctor', 'upload'):
+    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'rotate', 'init', 'doctor', 'upload', 'forward'):
         sub = commands.add_parser(name)
         sub.add_argument('--json', action='store_true')
         if name in ('check-config', 'doctor'):
@@ -30,7 +30,7 @@ def parser():
         if name == 'upload':
             sub.add_argument('file')
             sub.add_argument('--title')
-        if name in ('inbox', 'claim', 'wait', 'resume', 'send', 'rotate'):
+        if name in ('inbox', 'claim', 'wait', 'resume', 'send', 'rotate', 'forward'):
             sub.add_argument('--thread', required=True)
         elif name in ('release', 'done', 'reply', 'react', 'close', 'escalate', 'log'):
             sub.add_argument('--thread')
@@ -38,6 +38,11 @@ def parser():
             sub.add_argument('requests', type=int, nargs='+')
         elif name == 'resume':
             sub.add_argument('request', type=int)
+        elif name == 'forward':
+            sub.add_argument('request', type=int)
+            sub.add_argument('--to', required=True, help='thread key that should handle the request')
+            sub.add_argument('--reason', default='')
+            sub.add_argument('--claim', help='current claim, required when the request is claimed')
         elif name in ('release', 'done', 'reply', 'react', 'close', 'escalate'):
             sub.add_argument('request', type=int)
             sub.add_argument('--claim', required=True)
@@ -84,6 +89,19 @@ def parser():
         sub.add_argument('--show-ids', action='store_true')
         sub.add_argument('--config')
 
+    routing = commands.add_parser('router').add_subparsers(dest='action', required=True)
+    for action in ('review', 'mark', 'stats'):
+        sub = routing.add_parser(action)
+        sub.add_argument('--json', action='store_true')
+        if action == 'mark':
+            sub.add_argument('request', type=int)
+            sub.add_argument('verdict', choices=('right', 'wrong'))
+            sub.add_argument('--note')
+        else:
+            sub.add_argument('--since', help='ISO time, or 30m, 2h, 1d ago')
+        if action == 'review':
+            sub.add_argument('--route')
+            sub.add_argument('--undecided-only', action='store_true', help='only decisions not yet marked right or wrong')
     discover = commands.add_parser('discover').add_subparsers(dest='source', required=True)
     for source in ('whatsapp', 'teams', 'email', 'threads'):
         sub = discover.add_parser(source)
@@ -91,7 +109,7 @@ def parser():
         sub.add_argument('--limit', type=int, default=50)
     add = commands.add_parser('add').add_subparsers(dest='kind', required=True)
     remove = commands.add_parser('remove').add_subparsers(dest='kind', required=True)
-    for kind in ('person', 'thread', 'route'):
+    for kind in ('person', 'thread', 'route', 'project'):
         sub = add.add_parser(kind)
         options(sub)
         sub.add_argument('key')
@@ -105,6 +123,11 @@ def parser():
                 sub.add_argument('--' + flag)
             for flag in ('whatsapp', 'email'):
                 sub.add_argument('--' + flag, action='append')
+        elif kind == 'project':
+            sub.add_argument('--name', required=True)
+            sub.add_argument('--alias', dest='aliases', action='append', help='another name people use; repeat for more')
+            sub.add_argument('--description', help='one line the router reads')
+            sub.add_argument('--thread', required=True)
         elif kind == 'thread':
             for flag in ('project', 'fallback', 't3-thread'):
                 sub.add_argument('--' + flag)
@@ -115,6 +138,7 @@ def parser():
                 sub.add_argument('--' + flag, required=True, action='append')
             sub.add_argument('--thread', required=True)
             sub.add_argument('--mode', required=True, choices=('draft', 'act'))
+            sub.add_argument('--router', help='off (default) or shadow: log which thread the router would pick')
             for flag in ('label', 'reply-to', 'reply-prefix', 'active-from'):
                 sub.add_argument('--' + flag)
             for flag in ('post-as-bot', 'owner-reply-closes', 'reply-via-whatsapp'):
@@ -155,6 +179,15 @@ def moment(value, now, sign):
 
 def dispatch(args, app):
     c = args.command
+    if c == 'forward':
+        return app.forward(args.request, args.to, args.thread, args.reason, args.claim)
+    if c == 'router':
+        if args.action == 'mark':
+            return router.mark(app, args.request, args.verdict, args.note)
+        since = moment(args.since, app.fx.now(), -1) if args.since else None
+        if args.action == 'stats':
+            return router.stats(app, since)
+        return router.review(app, since, args.route, args.undecided_only)
     if c == 'sync':
         if not 0 < args.lookback_hours < float('inf'):
             raise ValidationError('lookback-hours must be positive')
@@ -199,7 +232,9 @@ def dispatch(args, app):
             owner_jids.update(app.cfg['people'][key].get('whatsapp', []))
         for m in messages:
             req = (f'answer to request {m["answers_request"]}' if m['answers_request'] else
-                   f'request {m["request_id"]}, state {m["state"]}' if m['request_id'] else 'context only')
+                   f'request {m["request_id"]}, state {m["state"]}' if m['request_id'] else
+                   f'request {m["other_request"]} belongs to thread {m["other_thread"]}; context only here' if m['other_request'] else
+                   'context only')
             route = next((r for r in app.cfg['routes'] if r['name'] == m['route']), {})
             if m['request_id'] and route.get('reply_to'):
                 req += f', replies go to {app.cfg["people"][route["reply_to"]]["name"]}\'s WhatsApp, not this chat'
@@ -258,7 +293,8 @@ def dispatch(args, app):
     if c == 'import-pending':
         return dict(created=app.import_pending(args.route, timestamp(args.since)))
     if c == 'status':
-        return dict(requests=app.rows("SELECT thread,state,count(*) AS count FROM requests WHERE state IN ('new','claimed','done','escalated') GROUP BY thread,state"),
+        return dict(router=router.health(app.db, app.cfg, app.fx.now()) if router.routes(app.cfg) else None,
+                    requests=app.rows("SELECT thread,state,count(*) AS count FROM requests WHERE state IN ('new','claimed','done','escalated') GROUP BY thread,state"),
                     outbox=app.rows("SELECT * FROM outbox WHERE state!='sent' OR (request_id IS NULL AND created_at>=?)",
                                     (app.fx.now() - 86400,)), alerts=app.rows('SELECT * FROM alerts'),
                     promises=app.rows("SELECT id,thread,promise,promise_due FROM requests "
@@ -301,8 +337,8 @@ def main(argv=None, *, effects=None, paths=None):
             print(json.dumps(result) if args.json else result['url'])
             return 0
         if args.command == 'check-config':
-            result = dict(people=list(cfg['people']), threads=list(cfg['threads']),
-                          routes=[{k: r[k] for k in ('name', 'source', 'chats', 'thread', 'mode', 'requesters')} for r in cfg['routes']],
+            result = dict(people=list(cfg['people']), threads=list(cfg['threads']), projects=list(cfg['projects']),
+                          routes=[{k: r[k] for k in ('name', 'source', 'chats', 'thread', 'mode', 'requesters', 'router')} for r in cfg['routes']],
                           warnings=warnings(cfg, paths))
             result['todos'] = [i for i in setup.state_checks(cfg) if i['status'] == 'todo']
             if not args.show_ids:
@@ -354,8 +390,10 @@ def agent_command(args, effects, paths):
             names = ('name', 'role', 'whatsapp', 'teams_id', 'email')
         elif args.kind == 'thread':
             names = ('project', 'fallback', 't3_thread', 'rotate_tokens')
+        elif args.kind == 'project':
+            names = ('name', 'aliases', 'description', 'thread')
         else:
-            names = ('source', 'thread', 'mode', 'label', 'post_as_bot', 'owner_reply_closes', 'reply_to', 'reply_prefix', 'reply_via_whatsapp', 'active_from')
+            names = ('source', 'thread', 'mode', 'router', 'label', 'post_as_bot', 'owner_reply_closes', 'reply_to', 'reply_prefix', 'reply_via_whatsapp', 'active_from')
         entry = {key: getattr(args, key) for key in names if getattr(args, key) is not None}
         if args.kind == 'thread':
             entry['hook_file'] = str(agentsetup.hooks_dir() / (configedit.key_name(args.key) + '.hook'))

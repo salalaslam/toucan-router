@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS messages (
  id INTEGER PRIMARY KEY, source TEXT, account TEXT, chat TEXT, msg_id TEXT, route TEXT,
  sender_key TEXT, sender_raw TEXT, sender_name TEXT, is_owner INTEGER, ts REAL, text TEXT,
  attachments_json TEXT, edited INTEGER, deleted INTEGER, first_seen REAL, last_seen REAL,
- deferred_cutoff REAL, mentions_json TEXT,
+ deferred_cutoff REAL, mentions_json TEXT, quoted_ids TEXT, own_text TEXT,
  UNIQUE(source,account,chat,msg_id));
 CREATE TABLE IF NOT EXISTS requests (
  id INTEGER PRIMARY KEY, message_id INTEGER UNIQUE REFERENCES messages(id), route TEXT, thread TEXT,
@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS owner_answers (
 CREATE TABLE IF NOT EXISTS transcripts (
  chat TEXT, msg_id TEXT, path TEXT, text TEXT, attempts INTEGER DEFAULT 0, updated_at REAL,
  PRIMARY KEY(chat,msg_id));
+CREATE TABLE IF NOT EXISTS router_decisions (
+ request_id INTEGER PRIMARY KEY REFERENCES requests(id), mode TEXT, step INTEGER, kind TEXT, decision TEXT,
+ projects_json TEXT, threads_json TEXT, parts_json TEXT, reason TEXT, command_index INTEGER, latency_ms INTEGER,
+ created_at REAL, verdict TEXT CHECK(verdict IN ('right','wrong')), verdict_note TEXT, verdict_at REAL);
 CREATE TABLE IF NOT EXISTS alerts (key TEXT PRIMARY KEY, text TEXT, since REAL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX IF NOT EXISTS request_thread ON requests(thread,state);
@@ -99,7 +103,8 @@ def connect(path=None, dry=False):
 
 def migrate(db):
     db.execute("DELETE FROM meta WHERE key LIKE 'teams-ingestion:%'")
-    for table, fields in (('messages', (('deferred_cutoff', 'REAL'), ('mentions_json', 'TEXT'))),
+    for table, fields in (('messages', (('deferred_cutoff', 'REAL'), ('mentions_json', 'TEXT'), ('quoted_ids', 'TEXT'),
+                                        ('own_text', 'TEXT'))),
                           ('requests', (('promise', 'TEXT'), ('promise_due', 'REAL')))):
         have = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
         for column, kind in fields:

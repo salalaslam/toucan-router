@@ -1,6 +1,7 @@
 """Read-only adapters for the wacli and Toucan bot stores."""
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -127,10 +128,12 @@ def whatsapp(paths, chat, since, tracked):
         if noise(m):
             continue
         attachments = [{k: m[k] for k in ('media_type', 'filename', 'local_path') if m.get(k)}]
+        text = m['text'] or m['display_text'] or m.get('media_caption') or ''
         result.append(dict(source='whatsapp', account=paths.wa_account, chat=chat, msg_id=m['msg_id'],
                            sender_raw=m['sender_jid'], sender_name=m['sender_name'],
-                           is_owner=int(bool(m['from_me'])), ts=m['ts'],
-                           text=m['text'] or m['display_text'] or m.get('media_caption') or '',
+                           is_owner=int(bool(m['from_me'])), ts=m['ts'], text=text, own_text=text,
+                           # wacli keeps the quoted message's ID, not its text.
+                           quoted_ids=json.dumps([m['quoted_msg_id']] if m.get('quoted_msg_id') else []),
                            attachments_json=json.dumps([a for a in attachments if a]),
                            edited=int(bool(m['edited'])), deleted=int(bool(m['revoked'] or m.get('deleted_for_me')))))
     return result
@@ -306,9 +309,12 @@ def teams_batch(paths, chat, since, tracked, owner_teams_id='', after=None):
         for row in rows:
             m = dict(row)
             quotes = []
+            linked = [m['reply_to_id']] if m.get('reply_to_id') else []
             for entity in json.loads(m.get('quoted_json') or '[]'):
                 if entity.get('type') == 'quotedReply':
                     quote = entity.get('quotedReply', {})
+                    if isinstance(quote.get('messageId'), str) and quote['messageId']:
+                        linked.append(quote['messageId'])
                     if quote.get('preview'):
                         quotes.append(html_text(dict(contentType='html', content=quote['preview'])))
             for attachment in json.loads(m['attachments_json']):
@@ -320,6 +326,8 @@ def teams_batch(paths, chat, since, tracked, owner_teams_id='', after=None):
                         except ValueError:
                             continue
                     if isinstance(reference, dict):
+                        if isinstance(reference.get('messageId'), str) and reference['messageId']:
+                            linked.append(reference['messageId'])
                         preview = reference.get('messagePreview') or reference.get('originalMessageContent')
                         if preview:
                             quotes.append(html_text(dict(contentType='html', content=preview)))
@@ -344,7 +352,8 @@ def teams_batch(paths, chat, since, tracked, owner_teams_id='', after=None):
                                sender_raw=sender, sender_name=m['sender_name'],
                                is_owner=int(bool(owner_teams_id) and sender == owner_teams_id.lower()),
                                # Zero marks unknown creation; sync/import must keep it context-only.
-                               ts=timestamp(m['ts']) if m['ts'] else 0, text=text,
+                               ts=timestamp(m['ts']) if m['ts'] else 0, text=text, own_text=m['text'],
+                               quoted_ids=json.dumps(list(dict.fromkeys(linked))),
                                attachments_json=json.dumps(attachments),
                                # None: the bot has no mention data for this row; keep what was stored.
                                mentions_json=None if m['mentions_json'] is None else
@@ -432,6 +441,33 @@ def mail_body(parts):
     return plain, html
 
 
+def in_reply_to(message, headers):
+    """Message-IDs (without brackets, as notmuch stores them) from In-Reply-To. notmuch's JSON
+    leaves the header out, so it is read from the message file."""
+    value = headers.get('in-reply-to', '')
+    if not value:
+        filenames = message.get('filename', [])
+        for filename in [filenames] if isinstance(filenames, str) else filenames:
+            try:
+                with Path(filename).open('rb') as archive:
+                    value = str(BytesHeaderParser().parsebytes(archive.read(131072)).get('In-Reply-To', ''))
+                break
+            except OSError:
+                continue
+    return re.findall(r'<([^<>\s]+)>', value)[:5]
+
+
+def unquoted(text):
+    """Email text without quoted lines or the quoted message after an 'On ... wrote:' line."""
+    lines = []
+    for line in text.splitlines():
+        if re.fullmatch(r'\s*On .{4,200} wrote:\s*', line):
+            break
+        if not line.lstrip().startswith('>'):
+            lines.append(line)
+    return '\n'.join(lines)
+
+
 def email(paths, chat, since, tracked, route=None, cfg=None):
     allowed = {address.lower() for key in (route or {}).get('requesters', [])
                for address in (cfg or {}).get('people', {}).get(key, {}).get('email', [])}
@@ -484,5 +520,6 @@ def email(paths, chat, since, tracked, route=None, cfg=None):
             seen.add(message['id'])
             result.append(dict(source='email', account='email', chat=min(recipients_allowed & recipients), msg_id=message['id'],
                                sender_raw=sender[0][1].lower(), sender_name=sender[0][0], is_owner=0,
-                               ts=ts, text=text, attachments_json='[]', edited=0, deleted=0))
+                               ts=ts, text=text, own_text=unquoted(text), quoted_ids=json.dumps(in_reply_to(message, headers)),
+                               attachments_json='[]', edited=0, deleted=0))
     return result

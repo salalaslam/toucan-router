@@ -19,6 +19,16 @@ fallback_minutes = 5
 rotate_tokens = 200000       # ask idle owner threads to hand over at this context size
 rotate_stall_minutes = 60    # alert if a handover has not finished by then
 # transcribe = "chatgpt-transcribe"   # voice notes become text before they reach a thread
+# The router (routes with router = "shadow") logs which thread it would pick for each request.
+# router_general_thread = "general"   # thread for off-topic requests; required once a route uses the router
+# router_commands = [                   # tried in order; each reads the prompt on stdin, prints one JSON object
+#   ["claude", "-p", "--model", "claude-haiku-5-5", "--tools", "", "--no-session-persistence"],
+#   ["codex", "exec", "--model", "gpt-6-luna", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "-"],
+# ]
+# followup_minutes = 120        # an unnamed message this soon after the person's last request follows it
+# router_timeout_seconds = 60   # per router command
+# router_budget_seconds = 90    # router command time per sync; the rest wait for the next sync
+# router_history = 20           # the person's earlier messages the router sees
 
 [people.alice]
 name = "Alice Example"
@@ -53,6 +63,7 @@ thread = "project-a"
 mode = "act"
 requesters = ["alice"]
 active_from = "2026-10-17T00:00:00+00:00"
+# router = "shadow"   # log which thread the router would pick; routing stays as it is
 
 # The owner's own 1:1 with the assistant number: their messages there become requests.
 # [people.owner]
@@ -102,6 +113,13 @@ active_from = "2026-10-17T00:00:00+00:00"
 # mode = "draft"              # email is read-only; replies go to owner_whatsapp
 # requesters = ["alice"]
 # active_from = "2026-10-17T00:00:00+00:00"
+
+# Projects the router can pick. The key, name and aliases match whole words, in any case.
+# [projects.project-a]
+# name = "Project A"
+# aliases = ["proj-a", "the portal"]
+# description = "Customer portal and its API"   # one line the router reads
+# thread = "project-a"
 
 [sources.whatsapp]
 store = "~/.local/state/wacli"

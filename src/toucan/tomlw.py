@@ -13,7 +13,10 @@ def literal(value):
         return repr(value)
     if isinstance(value, list) and all(isinstance(v, str) for v in value):
         return '[' + ', '.join(literal(v) for v in value) + ']'
-    raise ValueError('unsupported TOML value; use text, numbers, booleans or string lists')
+    # Lists of string lists hold commands, such as settings.router_commands.
+    if isinstance(value, list) and all(isinstance(v, list) and all(isinstance(a, str) for a in v) for v in value):
+        return '[' + ', '.join(literal(v) for v in value) + ']'
+    raise ValueError('unsupported TOML value; use text, numbers, booleans, string lists or lists of string lists')
 
 
 def key(name):

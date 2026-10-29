@@ -126,7 +126,8 @@ Finish by showing the operator `toucan doctor` output and anything you skipped.
 | New requester | `toucan add person KEY ...`, then `toucan add route ... --replace` with them in `--requester` |
 | New chat | `toucan discover ...`, then `toucan add route ...`. Each chat may be in only one route. |
 | New owner thread | `toucan add thread KEY`, then step 4 above |
-| Remove something | `toucan remove person\|thread\|route KEY` (refused while something still refers to it) |
+| New project for the router | `toucan add project KEY --name 'NAME' --alias ALIAS --thread KEY` |
+| Remove something | `toucan remove person\|thread\|route\|project KEY` (refused while something still refers to it) |
 | Older unanswered messages | `toucan import-pending --route NAME --since ISO`, only if the operator asks |
 
 Ask the operator before adding a requester, switching a route from `draft` to `act`, or

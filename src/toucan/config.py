@@ -1,4 +1,5 @@
 """Configuration and identity validation. Display names never establish identity."""
+import json
 import os
 import re
 import stat
@@ -12,13 +13,18 @@ DEFAULTS = dict(rewake_minutes=15, wake_gap_minutes=2, max_wakes=3, claimed_stal
                 done_unclosed_minutes=30, whatsapp_stale_minutes=120, rate_per_hour=20,
                 context_hours=24, ack_alert_minutes=5, fallback_minutes=5, rotate_tokens=200000,
                 rotate_stall_minutes=60, owner_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
-                alert_url_file='', upload_command='toucan-upload-loom', transcribe='')
+                alert_url_file='', upload_command='toucan-upload-loom', transcribe='', followup_minutes=120,
+                router_general_thread='', router_commands=(), router_timeout_seconds=60, router_history=20,
+                router_budget_seconds=90)
+ROUTER_MODES = ('off', 'shadow')
+ROUTER_BUDGET_MAX = 180  # seconds; keeps a sync well inside the timer unit's 5-minute timeout
 PHONE = re.compile(r'^\d+@s\.whatsapp\.net$')
 JID = re.compile(r'^\d+@(s\.whatsapp\.net|lid|g\.us)$')
 # Keys toucan reads (active_ts is added by load). Anything else is likely a typo that would do nothing.
 KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email'},
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens'},
-            routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from',
+            projects={'name', 'aliases', 'description', 'thread'},
+            routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
                     'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'active_ts'},
             sources={'whatsapp': {'store', 'account', 'service_unit'},
                      'teams': {'bot_db', 'stale_minutes', 'service_unit'},
@@ -26,7 +32,9 @@ KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id
 SOURCE_DEFAULTS = dict(whatsapp=dict(store='~/.local/state/wacli', account='wa', service_unit=''),
                        teams=dict(bot_db='~/.local/state/toucan-bot/bot.db', stale_minutes=5, service_unit=''),
                        email=dict(notmuch_config='', stale_minutes=60))
-TEXT_SETTINGS = {'owner_whatsapp', 'owner_teams_id', 'owner_name', 'timezone', 'alert_url', 'alert_url_file', 'upload_command', 'transcribe', 'ntfy'}
+TEXT_SETTINGS = {'owner_whatsapp', 'owner_teams_id', 'owner_name', 'timezone', 'alert_url', 'alert_url_file', 'upload_command', 'transcribe', 'ntfy',
+                 'router_general_thread'}
+LIST_SETTINGS = {'router_commands'}
 
 
 class ValidationError(ValueError):
@@ -80,20 +88,28 @@ def load(path=None):
 
 
 def validate(cfg):
-    if any(not isinstance(cfg.get(k, {}), dict) for k in ('settings', 'people', 'threads', 'sources', 't3')):
-        raise ValidationError('settings, people and threads must be TOML tables')
+    if any(not isinstance(cfg.get(k, {}), dict) for k in ('settings', 'people', 'threads', 'projects', 'sources', 't3')):
+        raise ValidationError('settings, people, threads and projects must be TOML tables')
     settings = cfg['settings'] = DEFAULTS | cfg.get('settings', {})
     for key in DEFAULTS:
-        if key not in TEXT_SETTINGS:
+        if key not in TEXT_SETTINGS | LIST_SETTINGS:
             value = settings[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < float('inf'):
                 raise ValidationError(f'settings.{key} must be positive')
-    for key in ('max_wakes', 'rate_per_hour', 'rotate_tokens'):
+    for key in ('max_wakes', 'rate_per_hour', 'rotate_tokens', 'router_history'):
         if not isinstance(settings[key], int):
             raise ValidationError(f'settings.{key} must be an integer')
     for key in TEXT_SETTINGS & settings.keys():
         if not isinstance(settings[key], str):
             raise ValidationError(f'settings.{key} must be text')
+    commands = settings['router_commands']
+    if (not isinstance(commands, (list, tuple)) or
+            any(not isinstance(c, list) or not c or any(not isinstance(a, str) or '\0' in a for a in c) or not c[0] for c in commands)):
+        raise ValidationError('settings.router_commands must be an array of commands, each an array of text such as ["claude", "-p"]')
+    if settings['router_budget_seconds'] > ROUTER_BUDGET_MAX:
+        raise ValidationError(f'settings.router_budget_seconds must be at most {ROUTER_BUDGET_MAX}')
+    if settings['router_timeout_seconds'] > settings['router_budget_seconds']:
+        raise ValidationError('settings.router_timeout_seconds must not exceed router_budget_seconds')
     settings['owner_teams_id'] = settings['owner_teams_id'].lower()
     if 'ntfy' in settings and not settings['alert_url']:
         settings['alert_url'] = settings['ntfy']
@@ -157,6 +173,24 @@ def validate(cfg):
             raise ValidationError(f'thread {key}: rotate_tokens must be a positive integer')
         if 'fallback' in thread and (thread['fallback'] not in threads or thread['fallback'] == key):
             raise ValidationError(f'thread {key}: fallback must be another configured thread')
+    terms = {}
+    for key, project in cfg.setdefault('projects', {}).items():
+        if not isinstance(project, dict) or not isinstance(project.get('name'), str) or not project['name'].strip():
+            raise ValidationError(f'project {key}: name required')
+        if not isinstance(project.get('thread'), str) or project['thread'] not in threads:
+            raise ValidationError(f'project {key}: thread must be a configured thread')
+        aliases = project.get('aliases', [])
+        if not isinstance(aliases, list) or any(not isinstance(a, str) or not re.search(r'\w', a) for a in aliases):
+            raise ValidationError(f'project {key}: aliases must be a list of words or names')
+        description = project.get('description', '')
+        if not isinstance(description, str) or '\n' in description or '\r' in description:
+            raise ValidationError(f'project {key}: description must be one line of text')
+        for term in {' '.join(t.lower().split()) for t in (key, project['name'], *aliases)}:
+            if terms.setdefault(term, key) != key:
+                raise ValidationError(f'projects {terms[term]} and {key} both use the name or alias {json.dumps(term)}')
+    general = settings['router_general_thread']
+    if general and general not in threads:
+        raise ValidationError('settings.router_general_thread must be a configured thread')
     seen, names = set(), set()
     for route in routes:
         if not isinstance(route, dict):
@@ -176,6 +210,13 @@ def validate(cfg):
             raise ValidationError(f'route {name}: reply_via_whatsapp is only valid on Teams act routes and must be a boolean')
         if not isinstance(route.get('thread'), str) or route['thread'] not in threads:
             raise ValidationError(f'route {name}: unknown thread')
+        router = route.setdefault('router', 'off')
+        if router == 'live':
+            raise ValidationError(f'route {name}: router = "live" is not available yet; use "shadow" to log decisions')
+        if router not in ROUTER_MODES:
+            raise ValidationError(f'route {name}: router must be "off" or "shadow"')
+        if router != 'off' and not general:
+            raise ValidationError(f'route {name}: router needs settings.router_general_thread, the thread for off-topic requests')
         if not isinstance(route.get('requesters'), list) or not route['requesters']:
             raise ValidationError(f'route {name}: requesters required')
         if any(not isinstance(p, str) or p not in people for p in route['requesters']):
@@ -235,7 +276,7 @@ def warnings(cfg, paths=None):
     if 'ntfy' in cfg['settings']:
         result.append('settings.ntfy is renamed to alert_url')
     unknown = [k for k in cfg if k not in KEYS] + [f'settings.{k}' for k in cfg['settings'] if k not in KEYS['settings']]
-    for table in ('people', 'threads'):
+    for table in ('people', 'threads', 'projects'):
         unknown += [f'{table}.{key}.{k}' for key, entry in cfg[table].items() for k in entry if k not in KEYS[table]]
     unknown += [f'routes.{r["name"]}.{k}' for r in cfg['routes'] for k in r if k not in KEYS['routes']]
     unknown += [f'sources.{k}' for k in cfg['sources'] if k not in SOURCE_DEFAULTS]

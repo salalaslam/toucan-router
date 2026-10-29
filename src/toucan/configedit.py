@@ -81,6 +81,9 @@ def save(path, raw, *, text=None):
             os.unlink(name)
 
 
+TABLES = dict(person='people', thread='threads', route='routes', project='projects')
+
+
 def key_name(key):
     if not re.fullmatch(r'[A-Za-z0-9_-]+', key):
         raise config.ValidationError('keys must contain only letters, digits, underscores and hyphens')
@@ -158,7 +161,7 @@ def edit(path, action, key, values=None, list_values=False):
 def add(path, kind, key, entry, replace=False, now=None):
     key_name(key)
     raw = read(path)
-    table = dict(person='people', thread='threads', route='routes')[kind]
+    table = TABLES[kind]
     target = raw.setdefault(table, [] if kind == 'route' else {})
     old = next((r for r in target if r['name'] == key), None) if kind == 'route' else target.get(key)
     if kind == 'route':
@@ -186,9 +189,12 @@ def remove(path, kind, key):
             refs.append('routes.' + route['name'])
     if kind == 'thread':
         refs += ['threads.' + k + '.fallback' for k, t in raw.get('threads', {}).items() if t.get('fallback') == key]
+        refs += ['projects.' + k for k, p in raw.get('projects', {}).items() if p.get('thread') == key]
+        if raw.get('settings', {}).get('router_general_thread') == key:
+            refs.append('settings.router_general_thread')
     if refs:
         raise config.Refused('still referenced by ' + ', '.join(refs))
-    table = dict(person='people', thread='threads', route='routes')[kind]
+    table = TABLES[kind]
     exists = any(r['name'] == key for r in raw.get(table, [])) if kind == 'route' else key in raw.get(table, {})
     if not exists:
         validate(raw)
