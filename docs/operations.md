@@ -207,9 +207,9 @@ With `router = "live"`, sync applies each decision:
 1. **Rules first, no delay.** Steps 1 to 3 run inside sync as the request is created, so a
    request they place is in its thread before that sync's wakes go out. The inbox tells the
    thread why ("routed here because names Project B").
-2. **Held for the router command.** A request the rules can't place is held: it is not woken,
-   not in any thread's inbox as a request, can't be claimed or forwarded, and isn't handed to a
-   fallback thread. The router stage after the sync decides it and wakes the thread in the same
+2. **Held for the router command.** A request the rules can't place is held (state `held`): it
+   is not woken, not in any thread's inbox as a request, can't be claimed or forwarded, and isn't
+   handed to a fallback thread. The router stage after the sync decides it and wakes the thread in the same
    sync, using the usual wake gap and wake budget. A request whose earlier request (the one it
    replies to or follows) is itself held waits for that one first.
 3. **Never stranded.** A request not decided within `router_hold_minutes` (default 5), for
@@ -220,7 +220,14 @@ With `router = "live"`, sync applies each decision:
    the sync; held requests then time out as above.
 4. **After assignment it is an ordinary request.** Rate-limit handover to a thread's fallback,
    `toucan forward`, `owner_reply_closes`, owner answers to escalations and `toucan resume`
-   all work as before.
+   all work as before, and the request's state is `new` again.
+5. **A late decision never wins.** Each request has a routing generation that changes whenever
+   it is held, asked about, assigned (by a decision, a timeout, a release or an answer) or
+   bounced. A router command's decision applies only if the generation it started from is
+   still current when it is written, checked in the same transaction as the assignment or the
+   question. Otherwise it is dropped (event `route_discarded`) and the request waits for the
+   next decision, so a slow command can't undo a timeout or send a request back to a thread
+   that bounced it in the meantime.
 
 Every live decision is a `router_decisions` row with mode `live`, so `toucan router review`,
 `mark` and `stats` cover live routing too. A request decided again after a bounce has several
@@ -231,12 +238,25 @@ question to the person), `fallback` (step 6, a question that couldn't be asked),
 Events: `route_held`, `routed` (a request got its thread, by any step), `route_live` (the
 router stage's decision, with each failed attempt, like `route_shadow`), `route_live_deferred`,
 `route_split`, `router_asked`, `router_answered`, `route_discarded` (a decision that arrived
-after the request had already timed out or been answered), `bounced`, `bounce_escalation_failed`,
+after the request had moved on: timed out, released, answered or bounced), `bounced`, `bounce_escalation_failed`,
 `promise_not_sent` and `reaction_kept`.
 
 `toucan sync --dry-run` places requests with the rules in its in-memory copy, reports which
 held requests would need a command, and sends nothing. `toucan sync --shadow` never asks
 anyone a question; held requests it can't place fall back to the route's thread.
+
+Versions before live routing don't know the `held` state, so they leave held requests alone:
+they neither wake nor hand them out, and nothing releases them either. To go back to such a
+version:
+
+1. Switch every live route to `router = "shadow"` (or `"off"`).
+2. Run `toucan sync` once with the current version. It releases every held request to its
+   route's thread (decision `released`) and wakes it; `toucan status` then shows an empty
+   `held` list.
+3. Install the older version.
+
+Installing the older version first leaves held requests stranded until a live-routing version
+runs a sync again.
 
 ### Bouncing a request
 
@@ -276,6 +296,9 @@ bounced and then split again is asked about instead.
   and due time) but not sent when another part of the same message already had a reply sent;
   `--final` and `--keep-open` replies are always sent.
 - An edit or deletion of the message flags every part.
+- `owner_reply_closes` treats the message as one: once any part has had a reply sent, an owner
+  message in the chat stands no part down, and a part holding a promise is never stood down.
+  An owner message before any reply closes every part.
 
 ### Asking the person
 
@@ -288,11 +311,19 @@ the outbox (with no request id), counted against `rate_per_hour`:
 - otherwise `Which project is this about? ` followed by the projects the person's recent
   requests went to, or every project name if there are none.
 
-Their next message in the same chat within `router_ask_minutes` (default 15) that names exactly
-one project answers it: the request goes to that project's thread and is woken in that sync,
-and the answer message is context, not a new request. If several questions to them are open,
-an answer that quotes one answers that one, otherwise the latest. Anything else they send in
-that window is handled as usual and the question stays open. With no answer in time the request
+A message from them in the same chat within `router_ask_minutes` (default 15) answers it when it
+names exactly one project and either
+
+- replies to or quotes the question (it answers that question, however long it is), or
+- quotes nothing and is essentially just the project name: once the project names and the
+  words a, an, the, it, it's, its, is, was, for, about, this, that, one, project, please,
+  thanks, thank, you, yes, ok, i, mean and meant are taken out, at most one word is left
+  ("Project A please", "the billing one", "it's billing"). It answers the latest open question.
+
+The request goes to that project's thread and is woken in that sync, and the answer message is
+context, not a new request. Anything else they send in that window, such as "Separately, fix
+the billing export crash" or a short message quoting something else, is handled as a new
+message as usual and the question stays open. With no answer in time the request
 goes to the route's thread with reason `no answer to the question`. A request is never asked
 about twice.
 

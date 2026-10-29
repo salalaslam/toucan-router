@@ -1,6 +1,11 @@
+import importlib
+import io
 import json
 import sqlite3
+import subprocess
 import sys
+import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -102,7 +107,7 @@ def test_a_request_not_decided_in_time_goes_to_the_route_thread_and_alerts(world
     hold_stage(world)
     world.wa('m1', text='hello')
     req = world.app.sync()['created'][0]
-    assert request(world, req) == ('project-a', 'pending', 'new') and world.hooks() == []
+    assert request(world, req) == ('project-a', 'pending', 'held') and world.hooks() == []
     with pytest.raises(Refused):
         world.app.claim([req], 'project-a')
     with pytest.raises(Refused, match='being routed'):
@@ -159,7 +164,7 @@ def test_held_requests_are_not_handed_over_while_the_route_thread_is_rate_limite
     req = world.app.sync()['created'][0]
     world.advance(4 * 60 + 30)
     world.app.sync()
-    assert request(world, req) == ('project-a', 'pending', 'new')
+    assert request(world, req) == ('project-a', 'pending', 'held')
     world.db.execute("DELETE FROM meta WHERE key='router:lease'")
     world.app.sync()
     assert request(world, req) == ('project-a', None, 'new')
@@ -199,7 +204,7 @@ def test_bounce_reroutes_without_the_thread_that_bounced_then_escalates(world, t
     with pytest.raises(Refused, match='not found'):
         world.app.bounce(req, 'project-a', 'not mine', claim)
     assert world.app.bounce(req, 'project-b', 'this is the portal', claim) == dict(request=req, bounced=1, state='routing')
-    assert request(world, req) == ('project-a', 'pending', 'new') and world.app.get(req)['claim_id'] is None
+    assert request(world, req) == ('project-a', 'pending', 'held') and world.app.get(req)['claim_id'] is None
     world.advance(3 * 60)
     world.app.sync()
     # Step 2 names project-b, which bounced it, so the router command decides without it.
@@ -222,7 +227,7 @@ def test_an_answer_that_picks_a_thread_that_bounced_becomes_a_question(world):
     world.app.sync()
     assert world.sends == [['wacli', '--json', 'send', 'text', '--to', PHONE, '--message',
                             'Which project is this about? Project A or Project B?']]
-    assert request(world, req) == ('project-a', 'asked', 'new')
+    assert request(world, req) == ('project-a', 'asked', 'held')
     assert history(world, req)[-1][:3] == (4, 'offtopic', 'ask')
 
 
@@ -369,7 +374,7 @@ def test_unsure_asks_once_and_the_answer_routes_the_request_without_a_new_one(wo
     req = world.app.sync()['created'][0]
     assert world.sends == [['wacli', '--json', 'send', 'text', '--to', PHONE, '--message',
                             'Which project is this about: Project A or Project B?']]
-    assert request(world, req) == ('project-a', 'asked', 'new') and world.hooks() == []
+    assert request(world, req) == ('project-a', 'asked', 'held') and world.hooks() == []
     assert world.app.rows('SELECT request_id,kind,state FROM outbox') == [dict(request_id=None, kind='send', state='sent')]
     world.advance(60)
     world.wa('m2', text='and how is the weather?')
@@ -401,6 +406,26 @@ def test_no_answer_in_time_goes_to_the_route_thread_without_asking_again(world):
     world.advance(60)
     late = ask(world, 'm2', 'it was billing')
     assert request(world, late)[0] == 'project-b'  # a normal request now, not an answer
+
+
+def test_only_a_reply_to_the_question_or_a_bare_project_name_answers_it(world):
+    live(world, [unsure_unless_weather()]).seed()
+    world.wa('m1', text='can you look at the thing')
+    req = world.app.sync()['created'][0]
+    world.advance(60)
+    # A new instruction that happens to name one project is a request of its own.
+    other = ask(world, 'm2', 'Separately, fix the billing export crash')
+    assert request(world, other)[:2] == ('project-b', None)
+    # So is a short message that quotes something other than the question.
+    world.wa('m0', text='earlier', ts=world.now - 3600)
+    quoting = ask(world, 'm3', 'portal', quoted_msg_id='m0')
+    assert request(world, quoting)[:2] == ('project-a', None)
+    assert request(world, req)[1] == 'asked'
+    # A reply to the question answers it, however long.
+    world.wa('m4', text='this is for the billing team, the export page again', quoted_msg_id='sent-id')
+    assert world.app.sync()['created'] == []
+    assert request(world, req) == ('project-b', None, 'new')
+    assert world.app.get(req)['route_reason'] == 'the person answered Project B'
 
 
 def test_the_question_lists_the_persons_projects_or_else_all(world):
@@ -534,4 +559,120 @@ def test_migration_keeps_every_row_and_id_and_allows_several_requests_per_messag
     indexes = {r['name'] for r in db.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     assert {'request_thread', 'request_message', 'decision_request'} <= indexes
     assert db.execute("SELECT name FROM sqlite_master WHERE name LIKE '%_rebuild'").fetchall() == []
+    db.close()
+
+
+@pytest.mark.parametrize('first', [0, 1])
+def test_an_owner_reply_leaves_every_part_open_once_one_part_acknowledged(world, first):
+    live(world, [answer(**SPLIT)]).seed()
+    bot_route(world)['owner_reply_closes'] = True
+    world.send_result = world.send_result.__class__([], 0, '{"activity_id":"ack-1"}', '')
+    world.team('t1', text='fix the portal and rerun billing')
+    world.app.sync()
+    ids = [r['id'] for r in world.app.rows('SELECT id FROM requests ORDER BY id')]
+    threads = ['project-a', 'project-b']
+    claims = [world.app.claim([i], t) for i, t in zip(ids, threads)]
+    results = [world.app.deliver(ids[n], claims[n], text='On it', promise='the fix', due=world.now + 3600, thread=threads[n])
+               for n in (first, 1 - first)]
+    assert [r['state'] for r in results] == ['sent', 'not_sent']
+    world.advance(60)
+    world.team('owner-thanks', sender='owner-entra', text='thanks, I will check too')
+    world.app.sync()
+    assert [world.app.get(i)['state'] for i in ids] == ['claimed', 'claimed']
+    assert world.app.rows("SELECT * FROM events WHERE kind='owner_replied'") == []
+
+
+def test_an_owner_reply_before_any_acknowledgement_stands_every_part_down(world):
+    live(world, [answer(**SPLIT)]).seed()
+    bot_route(world)['owner_reply_closes'] = True
+    world.team('t1', text='fix the portal and rerun billing')
+    world.app.sync()
+    world.advance(60)
+    world.team('owner-answer', sender='owner-entra', text='both done already')
+    world.app.sync()
+    assert [r['close_reason'] for r in world.app.rows('SELECT close_reason FROM requests ORDER BY id')] == ['owner replied'] * 2
+
+
+OLD = 'f9748bc'  # the last commit before live routing: it knows nothing of held requests
+
+
+@pytest.fixture
+def old_toucan(tmp_path, monkeypatch):
+    """The router package as of OLD, imported as toucan_old, as if a rollback installed it."""
+    root = Path(__file__).resolve().parent.parent
+    if subprocess.run(['git', 'cat-file', '-e', OLD + '^{commit}'], cwd=root, capture_output=True).returncode:
+        pytest.skip(f'commit {OLD} is not in this checkout')
+    archive = subprocess.run(['git', 'archive', OLD, 'src/toucan'], cwd=root, capture_output=True, check=True).stdout
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        tar.extractall(tmp_path / 'old', filter='data')
+    (tmp_path / 'old/src/toucan').rename(tmp_path / 'old/toucan_old')
+    monkeypatch.syspath_prepend(str(tmp_path / 'old'))
+    yield {name: importlib.import_module('toucan_old.' + name) for name in ('config', 'core', 'storage')}
+    for name in [n for n in sys.modules if n == 'toucan_old' or n.startswith('toucan_old.')]:
+        del sys.modules[name]
+
+
+@pytest.mark.parametrize('asked', [False, True])
+def test_older_code_neither_wakes_nor_hands_out_a_held_request(world, old_toucan, asked):
+    live(world, [answer(kind='unsure', projects=['project-a', 'project-b'])]).seed()
+    if not asked:
+        hold_stage(world)
+    world.wa('m1', text='hello')
+    req = world.app.sync()['created'][0]
+    world.db.execute("DELETE FROM meta WHERE key='router:lease'")
+    assert request(world, req) == ('project-a', 'asked' if asked else 'pending', 'held')
+    db = old_toucan['storage'].connect(world.db_path)
+    old = old_toucan['core'].App(world.cfg, db, world.fx, world.paths)
+    world.advance(30 * 60)
+    old.sync()
+    assert world.hooks() == [] and old.pending('project-a') == []
+    with pytest.raises(old_toucan['config'].Refused):
+        old.claim([req], 'project-a')
+    with pytest.raises(old_toucan['config'].Refused):
+        old.forward(req, 'project-b', 'project-a')
+    db.close()
+    world.app.sync()  # the new version picks it up again
+    assert request(world, req) == ('project-a', None, 'new') and [h['thread'] for h in world.hooks()] == ['project-a']
+
+
+def test_a_decision_that_outlived_a_timeout_and_a_bounce_is_discarded(world):
+    live(world, [answer(projects=['project-a'])]).seed()
+    raced = []
+
+    def call(argv, text, timeout):
+        if not raced:
+            # While the command runs, another sync times the request out to project-a, which bounces it.
+            req = raced.append(world.app.rows('SELECT id FROM requests')[0]['id']) or raced[0]
+            hold_stage(world)
+            world.advance(5 * 60)
+            world.app.sync()
+            assert request(world, req) == ('project-a', None, 'new')
+            world.app.bounce(req, 'project-a', 'not the portal')
+        return effects.call(argv, text, timeout)
+
+    world.fx.call = call
+    world.wa('m1', text='hello')
+    world.app.sync()
+    req = raced[0]
+    assert request(world, req) == ('project-a', 'pending', 'held')
+    assert [h[:2] for h in history(world, req)] == [(5, 'timeout')]
+    assert len(world.app.rows("SELECT * FROM events WHERE kind='route_discarded' AND request_id=?", (req,))) == 1
+    world.db.execute("DELETE FROM meta WHERE key='router:lease'")
+    world.advance(60)
+    world.app.sync()  # decided again, without the thread that bounced it
+    assert history(world, req)[-1][:3] == (4, 'project', 'ask') and request(world, req)[1] == 'asked'
+
+
+def test_migration_moves_requests_held_in_state_new_to_held(tmp_path):
+    from toucan.storage import REQUESTS
+    path = tmp_path / 'live.db'
+    first_build = REQUESTS.replace("'new','held',", "'new',").replace(', route_gen INTEGER DEFAULT 0', '')
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY)")
+        db.execute(first_build.format(name='requests'))
+        db.executemany("INSERT INTO requests (id,state,routing) VALUES (?,?,?)",
+                       [(1, 'new', 'pending'), (2, 'new', 'asked'), (3, 'new', None), (4, 'claimed', None)])
+    db = connect(path)
+    assert [tuple(r) for r in db.execute('SELECT id,state,routing,route_gen FROM requests ORDER BY id')] == [
+        (1, 'held', 'pending', 0), (2, 'held', 'asked', 0), (3, 'new', None, 0), (4, 'claimed', None, 0)]
     db.close()

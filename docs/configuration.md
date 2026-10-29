@@ -167,7 +167,7 @@ One entry per group of chats that belongs to one thread.
 | `requesters` | yes | Person keys whose messages become requests. Everyone else's messages are context only. |
 | `active_from` | yes | ISO 8601 time with a timezone. Earlier messages never become requests. |
 | `post_as_bot` | no | Teams only. Post `act` replies in the chat as the Teams bot. |
-| `owner_reply_closes` | no | Teams only. If you answer in the chat before Toucan sends anything, the request closes as `owner replied`. |
+| `owner_reply_closes` | no | Teams only. If you answer in the chat before Toucan sends anything, the request closes as `owner replied`. A request with a promise, or whose message already had a reply sent for another part, stays open. |
 | `reply_via_whatsapp` | no | Teams `act` routes without `post_as_bot`. Send the reply to the asker's WhatsApp instead of drafting it to you. |
 | `reply_to` | no | WhatsApp `act` routes. Send every reply to this person's WhatsApp instead of the chat (for groups with clients in them). |
 | `reply_prefix` | no | Text added at the top of every reply and send on this route. |

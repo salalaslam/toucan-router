@@ -5,14 +5,16 @@ import sqlite3
 from pathlib import Path
 
 # One message can have several requests (a split), and a request several router decisions (bounces).
+# A request the live router holds is state 'held', which versions before live routing ignore, with
+# `routing` saying why; route_gen changes on every routing transition and fences router decisions.
 REQUESTS = '''CREATE TABLE IF NOT EXISTS {name} (
  id INTEGER PRIMARY KEY, message_id INTEGER REFERENCES messages(id), route TEXT, thread TEXT,
- state TEXT CHECK(state IN ('new','claimed','done','closed','escalated')), claim_id TEXT,
+ state TEXT CHECK(state IN ('new','held','claimed','done','closed','escalated')), claim_id TEXT,
  claimed_at REAL, done_at REAL, done_note TEXT, closed_at REAL, close_reason TEXT,
  reply_source TEXT, reply_chat TEXT, reply_person TEXT, mode TEXT, source_changed INTEGER DEFAULT 0,
  change_pending INTEGER DEFAULT 0, wakes INTEGER DEFAULT 0, last_wake_at REAL, created_at REAL,
  promise TEXT, promise_due REAL, part TEXT, part_label TEXT, routing TEXT CHECK(routing IN ('pending','asked')),
- held_at REAL, asked_at REAL, ask_outbox INTEGER, route_reason TEXT);'''
+ held_at REAL, asked_at REAL, ask_outbox INTEGER, route_reason TEXT, route_gen INTEGER DEFAULT 0);'''
 DECISIONS = '''CREATE TABLE IF NOT EXISTS {name} (
  id INTEGER PRIMARY KEY, request_id INTEGER REFERENCES requests(id), mode TEXT, step INTEGER, kind TEXT, decision TEXT,
  projects_json TEXT, threads_json TEXT, parts_json TEXT, reason TEXT, command_index INTEGER, latency_ms INTEGER,
@@ -116,12 +118,15 @@ def migrate(db):
                                         ('own_text', 'TEXT'))),
                           ('requests', (('promise', 'TEXT'), ('promise_due', 'REAL')))):
         if table == 'requests':
-            # Before live routing, message_id was UNIQUE and a request had at most one router decision.
-            rebuild(db, 'requests', REQUESTS, lambda: any(
+            # Before live routing, message_id was UNIQUE and a request had at most one router decision;
+            # the first live-routing build kept held requests in state 'new'.
+            rebuild(db, 'requests', REQUESTS, lambda: "'held'" not in db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='requests'").fetchone()[0] or any(
                 index[2] and [c[2] for c in db.execute(f'PRAGMA index_info("{index[1]}")')] == ['message_id']
                 for index in db.execute('PRAGMA index_list(requests)')))
             rebuild(db, 'router_decisions', DECISIONS,
                     lambda: 'id' not in {c[1] for c in db.execute('PRAGMA table_info(router_decisions)')})
+            db.execute("UPDATE requests SET state='held' WHERE state='new' AND routing IS NOT NULL")
         have = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
         for column, kind in fields:
             if column not in have:

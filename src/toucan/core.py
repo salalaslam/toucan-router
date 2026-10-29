@@ -14,6 +14,7 @@ from .effects import Effects
 from .storage import account_warning, event, insert, private_dir
 
 OPEN = "('new','claimed','done')"
+ACTIVE = "('new','held','claimed','done')"  # OPEN plus requests the live router holds: their messages are still tracked
 WAITER_FRESH = 30  # seconds; `toucan wait` beats every 5
 VOICE_TRIES = 3      # syncs that try one voice note before its request goes ahead without a transcript
 VOICE_PER_SYNC = 5
@@ -253,7 +254,7 @@ class App:
                         else:
                             tracked = [r['msg_id'] for r in self.db.execute(
                                 f'SELECT DISTINCT m.msg_id FROM messages m LEFT JOIN requests r ON r.message_id=m.id '
-                                f'WHERE m.route=? AND (? OR m.chat=?) AND r.state IN {OPEN}',
+                                f'WHERE m.route=? AND (? OR m.chat=?) AND r.state IN {ACTIVE}',
                                 (route['name'], route['source'] == 'email', '' if isinstance(chat, list) else chat))]
                             batch.extend(self.read_route(route, chat, since, tracked))
                 except (OSError, ValueError, KeyError, sqlite3.Error):
@@ -295,14 +296,14 @@ class App:
                                 self.new_request(m, route, mapping, report, route_result)
                             self.db.execute('UPDATE messages SET deferred_cutoff=NULL WHERE id=?', (old['id'],))
                         if changed:
-                            reqs = self.rows(f'SELECT id,thread FROM requests WHERE message_id=? AND state IN {OPEN}', (old['id'],))
+                            reqs = self.rows(f'SELECT id,thread FROM requests WHERE message_id=? AND state IN {ACTIVE}', (old['id'],))
                             for req in reqs:
                                 self.db.execute('UPDATE requests SET source_changed=1,change_pending=1,wakes=0,last_wake_at=NULL WHERE id=?', (req['id'],))
                                 self.record('source_changed', req['thread'], req['id'], deleted=bool(m['deleted']))
                         elif ready:
                             # A screenshot finished downloading: tell `toucan wait` and the inbox once,
                             # without calling it an edit or giving the request a fresh wake budget.
-                            for req in self.rows(f'SELECT id,thread FROM requests WHERE message_id=? AND state IN {OPEN}', (old['id'],)):
+                            for req in self.rows(f'SELECT id,thread FROM requests WHERE message_id=? AND state IN {ACTIVE}', (old['id'],)):
                                 self.db.execute('UPDATE requests SET change_pending=1 WHERE id=?', (req['id'],))
                                 self.record('attachment_ready', req['thread'], req['id'])
                     else:
@@ -322,13 +323,16 @@ class App:
                     insert(self.db, 'meta', key=seed_key, value=str(now))
                     self.record('route_seeded', route['thread'], route=route['name'], count=len(batch))
             # On an owner_reply_closes route, the owner answering in the chat before Toucan sends anything stands Toucan down.
+            # Toucan has replied to a message once any of its requests (the parts of a split) has a send, and a
+            # request holding a promise is never stood down: its acknowledgement may have gone out with another part.
             stand_down = [r['name'] for r in self.cfg['routes'] if r.get('owner_reply_closes')]
             if stand_down:
                 for req in self.rows(
                         f"SELECT r.id,r.thread FROM requests r JOIN messages q ON q.id=r.message_id "
-                        f"WHERE (r.state IN {OPEN} OR r.state='escalated') AND r.reply_source='teams' "
-                        f"AND r.route IN ({','.join('?' * len(stand_down))}) "
-                        "AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='send' AND o.state IN ('sent','sending','uncertain','pending')) "
+                        f"WHERE (r.state IN {ACTIVE} OR r.state='escalated') AND r.reply_source='teams' "
+                        f"AND r.route IN ({','.join('?' * len(stand_down))}) AND r.promise IS NULL "
+                        "AND NOT EXISTS (SELECT 1 FROM requests s JOIN outbox o ON o.request_id=s.id WHERE s.message_id=r.message_id "
+                        "AND o.kind='send' AND o.state IN ('sent','sending','uncertain','pending')) "
                         "AND EXISTS (SELECT 1 FROM messages m WHERE m.source='teams' AND m.chat=r.reply_chat "
                         "AND m.is_owner=1 AND m.deleted=0 AND m.ts>q.ts)", stand_down):
                     self.db.execute("UPDATE requests SET state='closed',closed_at=?,close_reason='owner replied',routing=NULL WHERE id=?", (now, req['id']))
@@ -755,14 +759,14 @@ class App:
                               f'hand it to the right thread with `toucan forward {req} --to THREAD --thread {thread}`')
             count = self.db.execute("SELECT count(*) FROM events WHERE kind='bounced' AND request_id=?", (req,)).fetchone()[0] + 1
             self.record('bounced', thread, req, reason=reason, count=count, was_claimed=row['state'] == 'claimed')
-            reset = "state='new',claim_id=NULL,claimed_at=NULL,change_pending=0,wakes=0,last_wake_at=NULL,route_reason=NULL"
+            reset = "claim_id=NULL,claimed_at=NULL,change_pending=0,wakes=0,last_wake_at=NULL,route_reason=NULL"
             if count < self.settings['max_bounces']:
-                self.db.execute(f"UPDATE requests SET thread=?,{reset},routing='pending',held_at=? WHERE id=?",
-                                (route['thread'], self.fx.now(), req))
+                self.db.execute(f"UPDATE requests SET thread=?,{reset},state='held',routing='pending',held_at=?,"
+                                "route_gen=route_gen+1 WHERE id=?", (route['thread'], self.fx.now(), req))
                 return dict(request=req, bounced=count, state='routing')
             # The route's thread holds the escalation, and gets the owner's answer back.
             claim_id = str(uuid.uuid4())
-            self.db.execute(f"UPDATE requests SET thread=?,{reset} WHERE id=?", (route['thread'], req))
+            self.db.execute(f"UPDATE requests SET thread=?,state='new',{reset} WHERE id=?", (route['thread'], req))
             self.db.execute("UPDATE requests SET state='claimed',claim_id=?,claimed_at=? WHERE id=?", (claim_id, self.fx.now(), req))
             threads = router.bounced(self.db, req)
         note = (f'No thread has taken this request: {", ".join(threads)} said it is not theirs (last reason: {reason}). '
@@ -853,7 +857,7 @@ class App:
             detail = dict(conversation_id=row['reply_chat'], message_id=message, emoji=emoji, removed=remove)
             # Parts of a split message share one reaction: the first adds it, the last to finish removes it.
             if remove and message == own and self.db.execute(
-                    "SELECT 1 FROM requests WHERE message_id=? AND id!=? AND state IN ('new','claimed','done','escalated')",
+                    "SELECT 1 FROM requests WHERE message_id=? AND id!=? AND state IN ('new','held','claimed','done','escalated')",
                     (row['message_id'], req)).fetchone():
                 self.record('reaction_kept', row['thread'], req, **detail)
                 return dict(request=req, **detail, skipped='another part of this message is still open')
@@ -1049,7 +1053,7 @@ class App:
                                  f'LEFT JOIN requests r ON r.message_id=m.id AND r.thread=? AND r.routing IS NULL '
                                  f'LEFT JOIN owner_answers a ON a.message_id=m.id LEFT JOIN requests ar ON ar.id=a.request_id '
                                  f'WHERE m.route IN ({marks}) AND (m.ts>=? OR (m.ts=0 AND m.first_seen>=?) OR ar.state IN {OPEN} '
-                                 f'OR EXISTS (SELECT 1 FROM requests o WHERE o.message_id=m.id AND o.state IN {OPEN})) '
+                                 f'OR EXISTS (SELECT 1 FROM requests o WHERE o.message_id=m.id AND o.state IN {ACTIVE})) '
                                  f'ORDER BY m.chat,m.ts,m.id,r.id',
                                  (thread, thread, thread, *sorted(routes), self.fx.now() - self.settings['context_hours'] * 3600,
                                   self.fx.now() - self.settings['context_hours'] * 3600))

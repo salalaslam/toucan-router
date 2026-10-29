@@ -2,8 +2,9 @@
 
 On a `shadow` route decisions are only logged. On a `live` route they are applied: steps 1 to 3
 run inside sync's transaction as each request is created (`place`), and a request they can't
-place is held (requests.routing = 'pending'), neither woken nor handed over, until the router
-stage decides it.
+place is held (state 'held', routing 'pending'), neither woken nor handed over, until the router
+stage decides it. Every routing transition bumps requests.route_gen; a decision applies only if
+the generation it started from is still current, so a slow decision can't undo a timeout or a bounce.
 
 The rules are pure functions over plain data. `run` applies them after sync's transaction has
 committed and its wakes have gone out, so router commands never hold a database lock, and it
@@ -26,6 +27,9 @@ MAX_OUTPUT = 65536    # characters of command output; anything longer is invalid
 MESSAGE_CHARS = 2000  # of each message in a prompt
 UNAVAILABLE_ALERT = 3  # consecutive "router unavailable" decisions before an alert
 LEASE_SLACK = 60       # seconds a crashed run's lease outlives its budget
+# Words that may surround a project name in a bare answer to a question, besides at most one other word.
+FILLER = {'a', 'an', 'the', 'it', "it's", 'its', 'is', 'was', 'for', 'about', 'this', 'that', 'one', 'project',
+          'please', 'thanks', 'thank', 'you', 'yes', 'ok', 'i', 'mean', 'meant'}
 
 INSTRUCTIONS = '''You choose which software project one chat message is about. Reply with one JSON object and nothing else:
 {{"kind": "project" | "split" | "depends" | "offtopic" | "unsure", "projects": [KEY, ...], "parts": [{{"project": KEY, "text": "..."}}, ...], "reason": "..."}}
@@ -61,6 +65,15 @@ def pattern(term):
 def named(text, projects):
     """Project keys whose key, name or an alias appears in text as a whole word."""
     return [key for key, project in projects.items() if any(pattern(t).search(text or '') for t in terms(key, project))]
+
+
+def bare(text, projects):
+    """Whether text is essentially just a project name: once every project term and FILLER word is
+    taken out, at most one word is left ("Project A please", "the billing one", "it's billing")."""
+    rest = text or ''
+    for term in sorted((t for key, p in projects.items() for t in terms(key, p)), key=len, reverse=True):
+        rest = pattern(term).sub(' ', rest)
+    return len([w for w in re.findall(r"[\w']+", rest.replace('\u2019', "'").lower()) if w not in FILLER]) <= 1
 
 
 def same_conversation(source, a, b):
@@ -189,7 +202,7 @@ def is_live(route):
     return bool(route) and route.get('router') == 'live'
 
 
-ROW = ('SELECT r.id AS request,r.route,r.thread,r.reply_person,r.created_at,r.routing,r.part,r.asked_at,m.* '
+ROW = ('SELECT r.id AS request,r.route,r.thread,r.reply_person,r.created_at,r.routing,r.route_gen,r.part,r.asked_at,m.* '
        'FROM requests r JOIN messages m ON m.id=r.message_id ')
 
 
@@ -203,7 +216,7 @@ def pending(db, cfg, since):
     shadow = ' OR '.join('(r.route=? AND r.created_at>=?)' for _ in chosen) or '0'
     return [dict(row) for row in db.execute(
         ROW + f'WHERE (({shadow}) AND r.routing IS NULL AND NOT EXISTS (SELECT 1 FROM router_decisions d WHERE d.request_id=r.id)) '
-        f"OR (r.routing='pending' AND r.state='new' AND r.route IN ({','.join('?' * len(live)) or 'NULL'})) ORDER BY r.id",
+        f"OR (r.routing='pending' AND r.state='held' AND r.route IN ({','.join('?' * len(live)) or 'NULL'})) ORDER BY r.id",
         [v for pair in chosen for v in pair] + live)]
 
 
@@ -357,6 +370,12 @@ def decide(app, rows):
     for index, m in enumerate(rows):
         attempts = []
         live = m['routing'] == 'pending'
+        if live:
+            # The generation this decision starts from, read before anything it is based on.
+            current = db.execute('SELECT state,routing,route_gen FROM requests WHERE id=?', (m['request'],)).fetchone()
+            if (current['state'], current['routing']) != ('held', 'pending'):
+                continue  # another sync placed it since this run read it
+            m['route_gen'] = current['route_gen']
         try:
             excluded = bounced(db, m['request']) if live else []
             # A live link to a request that is itself still held (waiting for an answer) can't be followed.
@@ -456,21 +475,23 @@ def reason_text(found):
     return f'the router command said: {found["reason"]}' if found['step'] == 4 else found['reason']
 
 
-def assign(app, request, found, expect):
+def assign(app, request, found, expect, gen=None):
     """Give a request the thread(s) of a route decision and record it, inside a transaction.
-    `expect` is the routing value the request must still have (None for a request being created),
-    so a decision that lost a race with a timeout, a release or an answer changes nothing.
-    Returns the threads, or None when the request had already moved on."""
+    `expect` is the routing value the request must still have (None for a request being created)
+    and `gen` its route_gen when the decision started, so a decision that lost a race with a
+    timeout, a release, a bounce or an answer changes nothing. Returns the threads, or None when
+    the request had already moved on."""
     db, projects = app.db, app.cfg['projects']
     groups = {}
     for part in found['parts']:
         groups.setdefault(part['thread'], []).append(part)
     threads = list(groups) or found['threads'][:1]
     reason = reason_text(found)[:300]
-    changed = db.execute("UPDATE requests SET thread=?,routing=NULL,held_at=NULL,route_reason=?,wakes=0,last_wake_at=NULL "
-                         "WHERE id=? AND state='new' AND routing IS ?", (threads[0], reason, request, expect))
+    changed = db.execute("UPDATE requests SET thread=?,state='new',routing=NULL,held_at=NULL,route_reason=?,wakes=0,"
+                         "last_wake_at=NULL,route_gen=route_gen+1 WHERE id=? AND state=? AND routing IS ? AND (? IS NULL OR route_gen=?)",
+                         (threads[0], reason, request, 'new' if expect is None else 'held', expect, gen, gen))
     if not changed.rowcount:
-        app.record('route_discarded', None, request, decision_kind=found['kind'], threads=threads)
+        app.record('route_discarded', None, request, decision_kind=found['kind'], threads=threads, generation=gen)
         return None
     record(app, request, found)
     app.record('routed', threads[0], request, step=found['step'], decision_kind=found['kind'], reason=found['reason'])
@@ -520,7 +541,7 @@ def place(app, request, route):
     if found:
         assign(app, request, found, None)
         return
-    db.execute("UPDATE requests SET routing='pending',held_at=? WHERE id=?", (app.fx.now(), request))
+    db.execute("UPDATE requests SET state='held',routing='pending',held_at=?,route_gen=route_gen+1 WHERE id=?", (app.fx.now(), request))
     app.record('route_held', route['thread'], request)
 
 
@@ -550,20 +571,25 @@ def question(app, m, candidates):
 
 def settle(app, m, found, attempts, summary):
     """Apply a live decision from the stage: assign it, or ask the person, or fall back."""
-    route = route_of(app.cfg, m['route'])
+    route, gen = route_of(app.cfg, m['route']), m['route_gen']
     summary.setdefault('routed', [])
     if found['decision'] == 'route':
         with app.transaction():
-            threads = assign(app, m['request'], found, 'pending')
+            threads = assign(app, m['request'], found, 'pending', gen)
             if threads:
                 store(app, m, found, attempts, mode='live', row=False)
                 summary['routed'] += threads
+            else:
+                summary.setdefault('discarded', []).append(m['request'])
         return
     problem = ('already asked once' if m['asked_at'] else None if can_ask(app, route) else
                "this route can't ask the person")
     out = None
     with app.transaction():
-        if app.db.execute('SELECT routing FROM requests WHERE id=?', (m['request'],)).fetchone()['routing'] != 'pending':
+        if not app.db.execute("SELECT 1 FROM requests WHERE id=? AND state='held' AND routing='pending' AND route_gen=?",
+                               (m['request'], gen)).fetchone():
+            app.record('route_discarded', None, m['request'], decision_kind=found['kind'], threads=[], generation=gen)
+            summary.setdefault('discarded', []).append(m['request'])
             return
         store(app, m, found, attempts, mode='live')
         if not problem:
@@ -576,10 +602,11 @@ def settle(app, m, found, attempts, summary):
                 problem = f'could not ask: {error}'
         if problem:
             threads = assign(app, m['request'], decision(6, 'fallback', [fallback(app, route, m['request'])],
-                                                         reason=f'{found["reason"]}; {problem}'[:300]), 'pending')
+                                                         reason=f'{found["reason"]}; {problem}'[:300]), 'pending', gen)
             summary['routed'] += threads or []
             return
-        app.db.execute("UPDATE requests SET routing='asked',asked_at=?,ask_outbox=? WHERE id=?", (app.fx.now(), out, m['request']))
+        app.db.execute("UPDATE requests SET routing='asked',asked_at=?,ask_outbox=?,route_gen=route_gen+1 WHERE id=?",
+                       (app.fx.now(), out, m['request']))
         app.record('router_asked', route['thread'], m['request'], outbox=out, projects=found['projects'])
     summary.setdefault('asked', []).append(m['request'])
     try:
@@ -589,33 +616,40 @@ def settle(app, m, found, attempts, summary):
         if app.db.execute('SELECT state FROM outbox WHERE id=?', (out,)).fetchone()['state'] == 'failed':
             with app.transaction():
                 threads = assign(app, m['request'], decision(6, 'fallback', [fallback(app, route, m['request'])],
-                                                             reason='the question could not be sent'), 'asked')
+                                                             reason='the question could not be sent'), 'asked', gen + 1)
                 summary['routed'] += threads or []
 
 
 def answer(app, m, route):
-    """Inside sync's transaction: if new message m answers an open question to its sender by naming
-    exactly one project, route the request it asked about there and return that request's id.
-    The message itself is then context, not a new request."""
+    """Inside sync's transaction: if new message m answers an open question to its sender, route
+    the request it asked about there and return that request's id. The message itself is then
+    context, not a new request. An answer names exactly one project and either replies to the
+    question or is essentially just the project name (`bare`); a message that quotes anything
+    else, or says more, is a message of its own and the question stays open."""
     if not is_live(route) or not m.get('ts'):
         return None
     minutes = app.settings['router_ask_minutes']
     rows = [r for r in app.db.execute(
-        "SELECT r.id,r.ask_outbox,q.chat FROM requests r JOIN messages q ON q.id=r.message_id WHERE r.route=? "
-        "AND r.reply_person=? AND r.routing='asked' AND r.state='new' AND r.asked_at<=? AND r.asked_at>=? "
+        "SELECT r.id,r.ask_outbox,r.route_gen,q.chat FROM requests r JOIN messages q ON q.id=r.message_id WHERE r.route=? "
+        "AND r.reply_person=? AND r.routing='asked' AND r.state='held' AND r.asked_at<=? AND r.asked_at>=? "
         'ORDER BY r.asked_at DESC,r.id DESC', (route['name'], m['sender_key'], m['ts'] + 1, m['ts'] - minutes * 60))
             if same_conversation(m['source'], r['chat'], m['chat'])]
     if not rows:
         return None
-    found = named(m['own_text'] if m.get('own_text') is not None else m['text'], app.cfg['projects'])
+    text = m['own_text'] if m.get('own_text') is not None else m['text']
+    found = named(text, app.cfg['projects'])
     if len(found) != 1:
         return None
     quoted = set(json.loads(m.get('quoted_ids') or '[]'))
     sent = {r['id']: app.db.execute('SELECT external_id FROM outbox WHERE id=?', (r['ask_outbox'],)).fetchone() for r in rows}
-    target = next((r for r in rows if sent[r['id']] and sent[r['id']]['external_id'] in quoted), rows[0])
+    target = next((r for r in rows if sent[r['id']] and sent[r['id']]['external_id'] in quoted), None)
+    if not target:
+        if quoted or not bare(text, app.cfg['projects']):
+            return None
+        target = rows[0]
     project = app.cfg['projects'][found[0]]
     threads = assign(app, target['id'], decision(6, 'answer', [project['thread']], projects=found,
-                                                 reason=f'the person answered {project["name"]}'), 'asked')
+                                                 reason=f'the person answered {project["name"]}'), 'asked', target['route_gen'])
     if threads:
         app.record('router_answered', threads[0], target['id'], msg_id=m['msg_id'])
     return target['id']
@@ -625,8 +659,8 @@ def expire(app, now, problems):
     """Inside sync's transaction, before wakes: hand on held requests that have waited too long, and
     release every held request on a route that is no longer live."""
     db, settings = app.db, app.settings
-    db.execute("UPDATE requests SET routing=NULL,held_at=NULL WHERE routing IS NOT NULL AND state!='new'")
-    for r in app.rows('SELECT * FROM requests WHERE routing IS NOT NULL ORDER BY id'):
+    db.execute("UPDATE requests SET routing=NULL,held_at=NULL WHERE routing IS NOT NULL AND state!='held'")
+    for r in app.rows("SELECT * FROM requests WHERE state='held' ORDER BY id"):
         route = route_of(app.cfg, r['route'])
         if not is_live(route):
             found = decision(0, 'released', [route['thread'] if route else r['thread']],
@@ -639,12 +673,12 @@ def expire(app, now, problems):
             found = decision(6, 'no_answer', [fallback(app, route, r['id'])], reason='no answer to the question')
         else:
             continue
-        assign(app, r['id'], found, r['routing'])
+        assign(app, r['id'], found, r['routing'], r['route_gen'])
 
 
 def held_requests(db):
     return [dict(r) for r in db.execute("SELECT id,route,thread,routing,held_at,asked_at FROM requests "
-                                        "WHERE routing IS NOT NULL AND state='new' ORDER BY id")]
+                                        "WHERE state='held' ORDER BY id")]
 
 
 def mode_label(cfg):
