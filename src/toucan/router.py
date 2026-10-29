@@ -28,8 +28,8 @@ MESSAGE_CHARS = 2000  # of each message in a prompt
 UNAVAILABLE_ALERT = 3  # consecutive "router unavailable" decisions before an alert
 LEASE_SLACK = 60       # seconds a crashed run's lease outlives its budget
 # Words that may surround a project name in a bare answer to a question, besides at most one other word.
-FILLER = {'a', 'an', 'the', 'it', "it's", 'its', 'is', 'was', 'for', 'about', 'this', 'that', 'one', 'project',
-          'please', 'thanks', 'thank', 'you', 'yes', 'ok', 'i', 'mean', 'meant'}
+FILLER = {'a', 'an', 'the', 'it', "it's", 'its', 'is', 'was', 'for', 'about', 'this', 'that', 'one', 'project', 'app',
+          'please', 'thanks', 'thank', 'you', 'yes', 'yeah', 'yep', 'ok', 'okay', 'sorry', 'oh', 'i', 'mean', 'meant'}
 
 INSTRUCTIONS = '''You choose which software project one chat message is about. Reply with one JSON object and nothing else:
 {{"kind": "project" | "split" | "depends" | "offtopic" | "unsure", "projects": [KEY, ...], "parts": [{{"project": KEY, "text": "..."}}, ...], "reason": "..."}}
@@ -69,11 +69,12 @@ def named(text, projects):
 
 def bare(text, projects):
     """Whether text is essentially just a project name: once every project term and FILLER word is
-    taken out, at most one word is left ("Project A please", "the billing one", "it's billing")."""
+    taken out, nothing is left ("Project A please", "the billing one", "it's billing"). Any other word
+    ("fix billing") makes it a message of its own, so a short instruction never disappears as an answer."""
     rest = text or ''
     for term in sorted((t for key, p in projects.items() for t in terms(key, p)), key=len, reverse=True):
         rest = pattern(term).sub(' ', rest)
-    return len([w for w in re.findall(r"[\w']+", rest.replace('\u2019', "'").lower()) if w not in FILLER]) <= 1
+    return len([w for w in re.findall(r"[\w']+", rest.replace('\u2019', "'").lower()) if w not in FILLER]) == 0
 
 
 def same_conversation(source, a, b):

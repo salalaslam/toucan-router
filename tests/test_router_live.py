@@ -219,6 +219,18 @@ def test_bounce_reroutes_without_the_thread_that_bounced_then_escalates(world, t
     assert [json.loads(e['detail_json'])['count'] for e in world.app.rows("SELECT * FROM events WHERE kind='bounced'")] == [1, 2]
 
 
+def test_a_bounced_request_keeps_its_overdue_promise_watched(world):
+    live(world).seed()
+    req = ask(world, 'm1', 'billing is broken')
+    claim = world.app.claim([req], 'project-b')
+    world.app.deliver(req, claim, text='On it', promise='a fix', due=world.now + 60)
+    world.advance(120)
+    assert f'promise:{req}' in world.app.sync()['problems']
+    world.app.bounce(req, 'project-b', 'not billing', world.app.get(req)['claim_id'])
+    assert request(world, req)[2] == 'held'
+    assert f'promise:{req}' in world.app.sync()['problems']
+
+
 def test_an_answer_that_picks_a_thread_that_bounced_becomes_a_question(world):
     live(world, [answer(kind='offtopic', reason='weather')]).seed()
     req = ask(world, 'm1', 'how is the weather?')
@@ -416,6 +428,9 @@ def test_only_a_reply_to_the_question_or_a_bare_project_name_answers_it(world):
     # A new instruction that happens to name one project is a request of its own.
     other = ask(world, 'm2', 'Separately, fix the billing export crash')
     assert request(world, other)[:2] == ('project-b', None)
+    # Even a two-word one: only filler may be left besides the project name.
+    short = ask(world, 'm2b', 'fix billing')
+    assert request(world, short)[:2] == ('project-b', None)
     # So is a short message that quotes something other than the question.
     world.wa('m0', text='earlier', ts=world.now - 3600)
     quoting = ask(world, 'm3', 'portal', quoted_msg_id='m0')

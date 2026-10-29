@@ -316,9 +316,10 @@ names exactly one project and either
 
 - replies to or quotes the question (it answers that question, however long it is), or
 - quotes nothing and is essentially just the project name: once the project names and the
-  words a, an, the, it, it's, its, is, was, for, about, this, that, one, project, please,
-  thanks, thank, you, yes, ok, i, mean and meant are taken out, at most one word is left
-  ("Project A please", "the billing one", "it's billing"). It answers the latest open question.
+  words a, an, the, it, it's, its, is, was, for, about, this, that, one, project, app, please,
+  thanks, thank, you, yes, yeah, yep, ok, okay, sorry, oh, i, mean and meant are taken out,
+  nothing is left ("Project A please", "the billing one", "it's billing"). It answers the latest
+  open question. "fix billing" has a word left over, so it becomes a request of its own.
 
 The request goes to that project's thread and is woken in that sync, and the answer message is
 context, not a new request. Anything else they send in that window, such as "Separately, fix

@@ -319,7 +319,7 @@ def dispatch(args, app):
                     outbox=app.rows("SELECT * FROM outbox WHERE state!='sent' OR (request_id IS NULL AND created_at>=?)",
                                     (app.fx.now() - 86400,)), alerts=app.rows('SELECT * FROM alerts'),
                     promises=app.rows("SELECT id,thread,promise,promise_due FROM requests "
-                                      "WHERE state IN ('new','claimed','done') AND promise IS NOT NULL"),
+                                      "WHERE state IN ('new','held','claimed','done') AND promise IS NOT NULL"),
                     last_sync=app.rows("SELECT value FROM meta WHERE key='last_sync'"),
                     threads={key: app.thread_status(key) for key in app.cfg['threads']},
                     waiters={key: app.waiter_running(key) for key in app.cfg['threads']})

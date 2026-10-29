@@ -349,7 +349,8 @@ class App:
             for req in posted:
                 self.db.execute("UPDATE requests SET state='closed',closed_at=?,close_reason='owner posted' WHERE id=?", (now, req['id']))
                 self.record('owner_posted', req['thread'], req['id'])
-            for req in self.rows(f'SELECT * FROM requests WHERE state IN {OPEN}'):
+            # Held requests (bounced back to the router) keep their promise, so it stays watched.
+            for req in self.rows(f"SELECT * FROM requests WHERE state IN {OPEN} OR state='held'"):
                 if req['promise_due'] is not None:
                     if now > req['promise_due']:
                         problems[f'promise:{req["id"]}'] = (f'{req["thread"]}: request {req["id"]} has an overdue promise '
