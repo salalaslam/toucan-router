@@ -38,10 +38,13 @@ Secrets never go in this file. Webhook URLs live in hook files and the alert URL
 | `rotate_tokens` | 200000 | Ask an idle owner thread to hand over to a fresh thread at this context size. |
 | `rotate_stall_minutes` | 60 | Alert when a handover hasn't finished after this long. |
 | `router_general_thread` | none | Thread key that gets off-topic requests. Required once any route has `router` other than `"off"`. |
-| `router_commands` | `[]` | Commands the router tries in order, each an array such as `["claude", "-p"]`. Each reads the prompt on stdin and must print one JSON object. Empty means requests the rules can't place are logged as `router unavailable`. |
+| `router_commands` | `[]` | Commands the router tries in order, each an array such as `["claude", "-p"]`. Each reads the prompt on stdin and must print one JSON object. Empty means requests the rules can't place are decided as `router unavailable` (on a live route, the person is asked). |
 | `router_timeout_seconds` | 60 | Longest one router command may run. At most `router_budget_seconds`. |
 | `router_budget_seconds` | 90 | Router command time per sync, at most 180. Requests left over are decided in a later sync. |
 | `router_history` | 20 | How many of the person's earlier messages in the chat the router sees. |
+| `router_hold_minutes` | 5 | Live routes: a request the router hasn't decided after this long goes to the route's thread, with an alert. |
+| `router_ask_minutes` | 15 | Live routes: how long the person has to answer "Which project is this about?" before the request goes to the route's thread. |
+| `max_bounces` | 2 | Live routes: after this many `toucan bounce`s a request is escalated to you instead of routed again. |
 | `followup_minutes` | 120 | A message that names no project, sent this soon after the same person's last request in the chat, follows that request. |
 
 `ntfy` is accepted as an old name for `alert_url`.
@@ -168,7 +171,7 @@ One entry per group of chats that belongs to one thread.
 | `reply_via_whatsapp` | no | Teams `act` routes without `post_as_bot`. Send the reply to the asker's WhatsApp instead of drafting it to you. |
 | `reply_to` | no | WhatsApp `act` routes. Send every reply to this person's WhatsApp instead of the chat (for groups with clients in them). |
 | `reply_prefix` | no | Text added at the top of every reply and send on this route. |
-| `router` | no | `"off"` (default) or `"shadow"`: log which thread the router would pick for each request, without changing where it goes. `"live"` is reserved and refused for now. |
+| `router` | no | `"off"` (default); `"shadow"`: log which thread the router would pick for each request, without changing where it goes; `"live"`: send each request to the thread the router picks. See [operations](operations.md#the-router). |
 
 ## Where Teams replies go
 

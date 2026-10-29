@@ -15,7 +15,7 @@ from .storage import connect
 def parser():
     p = argparse.ArgumentParser(prog='toucan')
     commands = p.add_subparsers(dest='command', required=True)
-    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'rotate', 'init', 'doctor', 'upload', 'forward'):
+    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'rotate', 'init', 'doctor', 'upload', 'forward', 'bounce'):
         sub = commands.add_parser(name)
         sub.add_argument('--json', action='store_true')
         if name in ('check-config', 'doctor'):
@@ -30,7 +30,7 @@ def parser():
         if name == 'upload':
             sub.add_argument('file')
             sub.add_argument('--title')
-        if name in ('inbox', 'claim', 'wait', 'resume', 'send', 'rotate', 'forward'):
+        if name in ('inbox', 'claim', 'wait', 'resume', 'send', 'rotate', 'forward', 'bounce'):
             sub.add_argument('--thread', required=True)
         elif name in ('release', 'done', 'reply', 'react', 'close', 'escalate', 'log'):
             sub.add_argument('--thread')
@@ -42,6 +42,10 @@ def parser():
             sub.add_argument('request', type=int)
             sub.add_argument('--to', required=True, help='thread key that should handle the request')
             sub.add_argument('--reason', default='')
+            sub.add_argument('--claim', help='current claim, required when the request is claimed')
+        elif name == 'bounce':
+            sub.add_argument('request', type=int)
+            sub.add_argument('--reason', required=True, help='why the request is not for this thread')
             sub.add_argument('--claim', help='current claim, required when the request is claimed')
         elif name in ('release', 'done', 'reply', 'react', 'close', 'escalate'):
             sub.add_argument('request', type=int)
@@ -138,7 +142,7 @@ def parser():
                 sub.add_argument('--' + flag, required=True, action='append')
             sub.add_argument('--thread', required=True)
             sub.add_argument('--mode', required=True, choices=('draft', 'act'))
-            sub.add_argument('--router', help='off (default) or shadow: log which thread the router would pick')
+            sub.add_argument('--router', help='off (default), shadow (log which thread the router would pick) or live (route)')
             for flag in ('label', 'reply-to', 'reply-prefix', 'active-from'):
                 sub.add_argument('--' + flag)
             for flag in ('post-as-bot', 'owner-reply-closes', 'reply-via-whatsapp'):
@@ -181,6 +185,10 @@ def dispatch(args, app):
     c = args.command
     if c == 'forward':
         return app.forward(args.request, args.to, args.thread, args.reason, args.claim)
+    if c == 'bounce':
+        if not args.reason.strip():
+            raise ValidationError('--reason cannot be empty')
+        return app.bounce(args.request, args.thread, args.reason, args.claim)
     if c == 'router':
         if args.action == 'mark':
             return router.mark(app, args.request, args.verdict, args.note)
@@ -218,6 +226,8 @@ def dispatch(args, app):
         commands = (f'toucan claim REQ... --thread {args.thread}; '
                     'toucan reply REQ --claim ID (--final | --promise WHAT --due 2h | --keep-open) --text TEXT; '
                     'toucan done REQ --claim ID --note TEXT; toucan close REQ --claim ID --reason TEXT')
+        if any(router.is_live(r) for r in app.cfg['routes']):
+            commands += f'; not yours: toucan bounce REQ --thread {args.thread} [--claim ID] --reason TEXT'
         waiting = app.waiter_running(args.thread)
         if args.json:
             return dict(next_steps=commands, waiter_running=waiting, untrusted_messages=messages)
@@ -235,6 +245,13 @@ def dispatch(args, app):
                    f'request {m["request_id"]}, state {m["state"]}' if m['request_id'] else
                    f'request {m["other_request"]} belongs to thread {m["other_thread"]}; context only here' if m['other_request'] else
                    'context only')
+            if m['request_id'] and m['part']:
+                req += (f', only the part of this message about {m["part_label"]} (shown first below); '
+                        f'replies start with "{m["part_label"]}:" automatically')
+                if m['other_request']:
+                    req += f'; thread {m["other_thread"]} has another part'
+            if m['request_id'] and m['route_reason']:
+                req += f', routed here because {json.dumps(m["route_reason"], ensure_ascii=False)}'
             route = next((r for r in app.cfg['routes'] if r['name'] == m['route']), {})
             if m['request_id'] and route.get('reply_to'):
                 req += f', replies go to {app.cfg["people"][route["reply_to"]]["name"]}\'s WhatsApp, not this chat'
@@ -252,6 +269,8 @@ def dispatch(args, app):
             flags = ' '.join(k for k in ('edited', 'deleted') if m[k])
             # Prefix every untrusted line so message text cannot forge a delimiter.
             content = m['text'] + '\nAttachments: ' + m['attachments_json']
+            if m['request_id'] and m['part']:
+                content = f'This request is only this part of the message: {m["part"]}\n\nThe whole message:\n{content}'
             if m['source'] == 'teams':
                 for attachment in json.loads(m['attachments_json']):
                     if attachment.get('local_path'):
@@ -294,7 +313,9 @@ def dispatch(args, app):
         return dict(created=app.import_pending(args.route, timestamp(args.since)))
     if c == 'status':
         return dict(router=router.health(app.db, app.cfg, app.fx.now()) if router.routes(app.cfg) else None,
-                    requests=app.rows("SELECT thread,state,count(*) AS count FROM requests WHERE state IN ('new','claimed','done','escalated') GROUP BY thread,state"),
+                    requests=app.rows("SELECT thread,state,count(*) AS count FROM requests WHERE state IN ('new','claimed','done','escalated') "
+                                      'AND routing IS NULL GROUP BY thread,state'),
+                    held=router.held_requests(app.db),
                     outbox=app.rows("SELECT * FROM outbox WHERE state!='sent' OR (request_id IS NULL AND created_at>=?)",
                                     (app.fx.now() - 86400,)), alerts=app.rows('SELECT * FROM alerts'),
                     promises=app.rows("SELECT id,thread,promise,promise_due FROM requests "

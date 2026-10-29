@@ -34,6 +34,7 @@ in the wake-up prompt and in `~/.config/toucan/toucan.toml` under `[threads.KEY]
 | No reply is needed | `toucan close REQ --claim ID --reason "..."` |
 | Someone else should take it | `toucan release REQ --claim ID` |
 | It belongs to another owner thread | `toucan forward REQ --to THREAD --thread KEY --reason "..."` (add `--claim ID` if you claimed it) |
+| It isn't yours and you don't know whose (live-routed chats) | `toucan bounce REQ --thread KEY --reason "..."` (add `--claim ID` if you claimed it) |
 | Risky, out of scope, or needs the owner | `toucan escalate REQ --claim ID --note "..."` |
 | The owner answered an escalation in this thread | `toucan resume REQ --thread KEY` |
 | A proof video to share | `toucan upload FILE --title "..."`, then put the link in the reply |
@@ -41,9 +42,19 @@ in the wake-up prompt and in `~/.config/toucan/toucan.toml` under `[threads.KEY]
 | A message with no request (delivering a promise) | `toucan send --route NAME --thread KEY --text "..."` |
 
 Forward only to a thread you know handles that project (the keys are in `toucan.toml` under
-`[threads]` and `[projects]`), and don't reply first. If you aren't sure where it belongs, keep
-it or escalate. A message the inbox marks as belonging to another thread is context, not
-yours to answer.
+`[threads]` and `[projects]`), and don't reply first. On a chat whose route has `router =
+"live"`, Toucan chose your thread and the inbox says why ("routed here because ..."); if it is
+wrong and you don't know the right thread, bounce it: the router picks again without you, and
+after a few bounces it goes to the owner. Elsewhere `bounce` is refused; keep the request or
+escalate it. Don't guess. A message the inbox marks as belonging to another thread is context,
+not yours to answer.
+
+When a message asked for things in several projects, Toucan may split it: each thread gets a
+request for its part, and the inbox says "only the part of this message about ...". Answer
+only your part. Your replies start with the project name automatically. Only one
+acknowledgement reaches the person per message: if another part already had a reply, a
+`--promise` reply is recorded but not sent, and on Teams the `eyes` reaction is shared, so
+just send the result with `--final` when it is ready.
 
 Escalate anything involving production, money, credentials or commitments to clients.
 Don't promise work that waits on an escalation; say it's waiting on a decision.

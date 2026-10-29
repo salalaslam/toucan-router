@@ -95,7 +95,17 @@ class App:
                      state='new', reply_source=m['source'], reply_chat=reply_chat,
                      reply_person=m['sender_key'], mode=route['mode'], created_at=self.fx.now())
         self.record('request_created', route['thread'], req)
+        if router.is_live(route):
+            router.place(self, req, route)
         return req
+
+    def new_request(self, m, route, mapping, report, route_result):
+        """A request for m, unless m answers the router's question to its sender (then it is context)."""
+        if router.answer(self, m, route) is not None:
+            return
+        req = self.create_request(m, route, mapping)
+        report['created'].append(req)
+        route_result['created'].append(dict(request=req, msg_id=m['msg_id'], chat=m['chat'], person=m['sender_key']))
 
     def owner_chats(self, mapping):
         owner = self.settings['owner_whatsapp']
@@ -242,7 +252,7 @@ class App:
                             watermarks[key] = latest
                         else:
                             tracked = [r['msg_id'] for r in self.db.execute(
-                                f'SELECT m.msg_id FROM messages m LEFT JOIN requests r ON r.message_id=m.id '
+                                f'SELECT DISTINCT m.msg_id FROM messages m LEFT JOIN requests r ON r.message_id=m.id '
                                 f'WHERE m.route=? AND (? OR m.chat=?) AND r.state IN {OPEN}',
                                 (route['name'], route['source'] == 'email', '' if isinstance(chat, list) else chat))]
                             batch.extend(self.read_route(route, chat, since, tracked))
@@ -282,9 +292,7 @@ class App:
                         if old['deferred_cutoff'] is not None and asks and m['ts'] >= old['deferred_cutoff']:
                             if not self.db.execute('SELECT 1 FROM requests WHERE message_id=?', (old['id'],)).fetchone():
                                 m['id'] = old['id']
-                                req = self.create_request(m, route, mapping)
-                                report['created'].append(req)
-                                route_result['created'].append(dict(request=req, msg_id=m['msg_id'], chat=m['chat'], person=m['sender_key']))
+                                self.new_request(m, route, mapping, report, route_result)
                             self.db.execute('UPDATE messages SET deferred_cutoff=NULL WHERE id=?', (old['id'],))
                         if changed:
                             reqs = self.rows(f'SELECT id,thread FROM requests WHERE message_id=? AND state IN {OPEN}', (old['id'],))
@@ -306,9 +314,7 @@ class App:
                         m['id'] = insert(self.db, 'messages', **m, route=route['name'], first_seen=now, last_seen=now,
                                          deferred_cutoff=deferred)
                         if asks:
-                            req = self.create_request(m, route, mapping)
-                            report['created'].append(req)
-                            route_result['created'].append(dict(request=req, msg_id=m['msg_id'], chat=m['chat'], person=m['sender_key']))
+                            self.new_request(m, route, mapping, report, route_result)
                     report['ingested'] += 1
                 for key, latest in watermarks.items():
                     self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (key, json.dumps(latest)))
@@ -325,8 +331,10 @@ class App:
                         "AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='send' AND o.state IN ('sent','sending','uncertain','pending')) "
                         "AND EXISTS (SELECT 1 FROM messages m WHERE m.source='teams' AND m.chat=r.reply_chat "
                         "AND m.is_owner=1 AND m.deleted=0 AND m.ts>q.ts)", stand_down):
-                    self.db.execute("UPDATE requests SET state='closed',closed_at=?,close_reason='owner replied' WHERE id=?", (now, req['id']))
+                    self.db.execute("UPDATE requests SET state='closed',closed_at=?,close_reason='owner replied',routing=NULL WHERE id=?", (now, req['id']))
                     self.record('owner_replied', req['thread'], req['id'])
+            # Held requests whose time is up, or whose route is no longer live, go to a thread before the wakes.
+            router.expire(self, now, problems)
             limited = self.rate_limits(problems, now)
             self.wake(report, problems, now, limited)
             self.rotate_threads(report, problems, now, limited)
@@ -372,6 +380,14 @@ class App:
             report['router'] = router.run(self, now)
         except Exception as error:
             report['problems']['router:failed'] = router.failed(self, error)
+        # Requests the router stage just placed are woken now, with the usual gap and wake budget.
+        threads = set((report.get('router') or {}).get('routed') or ())
+        if threads:
+            try:
+                with self.transaction():
+                    self.wake(report, report['problems'], self.fx.now(), limited, only=threads)
+            except Exception as error:
+                report['problems']['router:wake'] = f'Router: waking routed requests failed ({type(error).__name__}); the next sync wakes them'
         return report
 
     def owner_answers(self, mapping, now, problems):
@@ -450,7 +466,7 @@ class App:
 
     def pending(self, thread):
         return self.rows("SELECT r.*,m.ts FROM requests r JOIN messages m ON m.id=r.message_id "
-                         f"WHERE r.thread=? AND r.state IN {OPEN} AND (r.state='new' OR r.change_pending=1)", (thread,))
+                         f"WHERE r.thread=? AND r.state IN {OPEN} AND (r.state='new' OR r.change_pending=1) AND r.routing IS NULL", (thread,))
 
     def waiter_running(self, thread):
         beat = self.db.execute('SELECT value FROM meta WHERE key=?', ('waiter:' + thread,)).fetchone()
@@ -512,15 +528,17 @@ class App:
             backup = self.cfg['threads'][key].get('fallback')
             if not backup or backup in limited:
                 continue
-            for req in self.rows("SELECT id,created_at FROM requests WHERE thread=? AND state='new'", (key,)):
+            for req in self.rows("SELECT id,created_at FROM requests WHERE thread=? AND state='new' AND routing IS NULL", (key,)):
                 if now - max(req['created_at'], stopped) >= self.settings['fallback_minutes'] * 60:
                     self.db.execute('UPDATE requests SET thread=?,wakes=0,last_wake_at=NULL WHERE id=?', (backup, req['id']))
                     self.record('handed_over', backup, req['id'], from_thread=key)
         return limited
 
-    def wake(self, report, problems, now, limited):
+    def wake(self, report, problems, now, limited, only=None):
         rewake = self.settings['rewake_minutes'] * 60
         for key, thread in self.cfg['threads'].items():
+            if only is not None and key not in only:
+                continue
             pending = self.pending(key)
             stopped = limited.get(key)
             # Wakes into a rate-limited thread fail at once, so they don't use up the wake budget.
@@ -560,7 +578,7 @@ class App:
                     name = self.cfg['people'].get(req['reply_person'], {}).get('name', 'someone')
                     problems[f'unacked:{req["id"]}'] = (f'{key}: request {req["id"]} from {name} not picked up after '
                                                          f'{self.settings["ack_alert_minutes"]:g} min; the thread may be busy')
-            exhausted = self.db.execute("SELECT count(*) FROM requests WHERE thread=? AND state='new' AND wakes>=?",
+            exhausted = self.db.execute("SELECT count(*) FROM requests WHERE thread=? AND state='new' AND routing IS NULL AND wakes>=?",
                                         (key, self.settings['max_wakes'])).fetchone()[0]
             if exhausted:
                 problems['unclaimed:' + key] = f'{key}: {exhausted} requests unclaimed after {self.settings["max_wakes"]} wakes'
@@ -703,24 +721,66 @@ class App:
         if target == thread:
             raise Refused('the request is already in that thread')
         with self.transaction():
-            row = self.get(req, thread=thread)
-            if row['state'] == 'claimed':
-                if not claim or row['claim_id'] != claim:
-                    raise Refused('request is claimed; pass its current --claim, or release it first')
-            elif row['state'] != 'new':
-                raise Refused(f'only a new or claimed request can be forwarded, not one that is {row["state"]}')
-            if self.db.execute("SELECT 1 FROM outbox WHERE request_id=? AND state IN ('pending','sending')", (req,)).fetchone():
-                raise Refused('delivery in progress')
+            row = self.movable(req, thread, claim, 'forwarded')
             self.db.execute("UPDATE requests SET thread=?,state='new',claim_id=NULL,claimed_at=NULL,change_pending=0,"
                             "wakes=0,last_wake_at=NULL WHERE id=?", (target, req))
             self.record('forwarded', target, req, from_thread=thread, to_thread=target, reason=reason,
                         was_claimed=row['state'] == 'claimed')
         return dict(request=req, from_thread=thread, thread=target, state='new')
 
+    def movable(self, req, thread, claim, verb):
+        """The request, if `thread` may hand it on: new, or claimed with its current claim."""
+        row = self.get(req, thread=thread)
+        if row['routing']:
+            raise Refused('request is still being routed')
+        if row['state'] == 'claimed':
+            if not claim or row['claim_id'] != claim:
+                raise Refused('request is claimed; pass its current --claim, or release it first')
+        elif row['state'] != 'new':
+            raise Refused(f'only a new or claimed request can be {verb}, not one that is {row["state"]}')
+        if self.db.execute("SELECT 1 FROM outbox WHERE request_id=? AND state IN ('pending','sending')", (req,)).fetchone():
+            raise Refused('delivery in progress')
+        return row
+
+    def bounce(self, req, thread, reason, claim=None):
+        """A thread says a request isn't its. On a live route it goes back to the router, which won't
+        pick a thread that bounced it; after max_bounces it is escalated to the owner instead."""
+        if thread not in self.cfg['threads']:
+            raise ValidationError('unknown thread')
+        with self.transaction():
+            row = self.movable(req, thread, claim, 'bounced')
+            route = router.route_of(self.cfg, row['route'])
+            if not router.is_live(route):
+                raise Refused(f"request {req}'s route does not use the live router, so there is nothing to bounce it back to; "
+                              f'hand it to the right thread with `toucan forward {req} --to THREAD --thread {thread}`')
+            count = self.db.execute("SELECT count(*) FROM events WHERE kind='bounced' AND request_id=?", (req,)).fetchone()[0] + 1
+            self.record('bounced', thread, req, reason=reason, count=count, was_claimed=row['state'] == 'claimed')
+            reset = "state='new',claim_id=NULL,claimed_at=NULL,change_pending=0,wakes=0,last_wake_at=NULL,route_reason=NULL"
+            if count < self.settings['max_bounces']:
+                self.db.execute(f"UPDATE requests SET thread=?,{reset},routing='pending',held_at=? WHERE id=?",
+                                (route['thread'], self.fx.now(), req))
+                return dict(request=req, bounced=count, state='routing')
+            # The route's thread holds the escalation, and gets the owner's answer back.
+            claim_id = str(uuid.uuid4())
+            self.db.execute(f"UPDATE requests SET thread=?,{reset} WHERE id=?", (route['thread'], req))
+            self.db.execute("UPDATE requests SET state='claimed',claim_id=?,claimed_at=? WHERE id=?", (claim_id, self.fx.now(), req))
+            threads = router.bounced(self.db, req)
+        note = (f'No thread has taken this request: {", ".join(threads)} said it is not theirs (last reason: {reason}). '
+                'Which thread should handle it?')
+        try:
+            self.deliver(req, claim_id, text=note, escalation=True)
+        except Exception as error:
+            with self.transaction():
+                self.db.execute("UPDATE requests SET state='new',claim_id=NULL,claimed_at=NULL WHERE id=? AND claim_id=?", (req, claim_id))
+                self.record('bounce_escalation_failed', route['thread'], req, error=type(error).__name__)
+            raise RuntimeError(f'request {req} bounced {count} times; escalating it to the owner failed, '
+                               f'so it is now a new request in {route["thread"]}') from None
+        return dict(request=req, bounced=count, state='escalated', thread=route['thread'])
+
     def claim(self, ids, thread):
         with self.transaction():
             requests = [self.get(req) for req in ids]
-            if not requests or any(r['thread'] != thread or r['state'] != 'new' for r in requests):
+            if not requests or any(r['thread'] != thread or r['state'] != 'new' or r['routing'] for r in requests):
                 raise Refused('all requests must be new and belong to this thread')
             claim_id = str(uuid.uuid4())
             for req in requests:
@@ -788,9 +848,18 @@ class App:
             route = next((r for r in self.cfg['routes'] if r['name'] == row['route']), {})
             if not (row['reply_source'] == 'teams' and row['mode'] == 'act' and route.get('post_as_bot')):
                 raise Refused('react requires a Teams act route with post_as_bot enabled')
-            if message is None:
-                message = self.db.execute('SELECT msg_id FROM messages WHERE id=?', (row['message_id'],)).fetchone()['msg_id']
+            own = self.db.execute('SELECT msg_id FROM messages WHERE id=?', (row['message_id'],)).fetchone()['msg_id']
+            message = own if message is None else message
             detail = dict(conversation_id=row['reply_chat'], message_id=message, emoji=emoji, removed=remove)
+            # Parts of a split message share one reaction: the first adds it, the last to finish removes it.
+            if remove and message == own and self.db.execute(
+                    "SELECT 1 FROM requests WHERE message_id=? AND id!=? AND state IN ('new','claimed','done','escalated')",
+                    (row['message_id'], req)).fetchone():
+                self.record('reaction_kept', row['thread'], req, **detail)
+                return dict(request=req, **detail, skipped='another part of this message is still open')
+            if not remove and self.reacted(row['message_id'], detail):
+                self.record('reaction_kept', row['thread'], req, **detail)
+                return dict(request=req, **detail, skipped='already reacted')
             self.record('reaction_pending', row['thread'], req, **detail)
         argv = ['toucan-bot', '--json', 'react', '--conversation', row['reply_chat'], '--message', message, '--emoji', emoji]
         if remove:
@@ -807,6 +876,15 @@ class App:
         if result.returncode:
             raise RuntimeError('toucan-bot react failed; inspect request log')
         return dict(request=req, **detail)
+
+    def reacted(self, message_id, detail):
+        """Whether the bot's reaction is already on that message, added for any request on the same message."""
+        for e in self.db.execute("SELECT kind,detail_json FROM events WHERE kind IN ('reaction_added','reaction_removed') "
+                                 'AND request_id IN (SELECT id FROM requests WHERE message_id=?) ORDER BY id DESC', (message_id,)):
+            seen = json.loads(e['detail_json'])
+            if all(seen.get(k) == detail[k] for k in ('conversation_id', 'message_id', 'emoji')):
+                return e['kind'] == 'reaction_added'
+        return False
 
     def send(self, route_name, thread, text='', file=None, caption='', chat=None):
         route = next((r for r in self.cfg['routes'] if r['name'] == route_name), None)
@@ -859,9 +937,25 @@ class App:
             if self.db.execute("SELECT 1 FROM outbox WHERE request_id=? AND state IN ('pending','sending','uncertain')", (req,)).fetchone():
                 raise Refused('request already has an outstanding or uncertain delivery')
             name = self.cfg['people'][row['reply_person']]['name']
+            if row['part_label'] and not escalation:
+                # A request split from a bigger message says which project the reply is about.
+                said = (caption if file else text) or ''
+                if not said.lower().startswith(row['part_label'].lower() + ':'):
+                    said = f'{row["part_label"]}: {said}' if said else row['part_label']
+                caption, text = (said, text) if file else (caption, said)
+            if kind == 'send' and promise and self.db.execute(
+                    "SELECT 1 FROM requests r JOIN outbox o ON o.request_id=r.id WHERE r.message_id=? AND r.id!=? "
+                    "AND o.kind='send' AND o.state IN ('pending','sending','sent','uncertain')", (row['message_id'], req)).fetchone():
+                # One acknowledgement per message: another part of it already had a reply.
+                self.db.execute('UPDATE requests SET promise=?,promise_due=? WHERE id=?', (promise, due, req))
+                self.record('promise_not_sent', row['thread'], req, promise=promise, due=due)
+                return dict(outbox=None, state='not_sent', promise=promise,
+                            reason='another part of this message already had a reply, so this promise was recorded but not sent; '
+                                   'send the result with --final when it is ready')
             body = prefixed(route, caption if file else text)
             if escalation:
-                body = (f'Escalation from thread {row["thread"]}: {name} asked: {message["text"][:500]}\nNote: {text}'
+                asked = row['part'] or message['text'] or ''
+                body = (f'Escalation from thread {row["thread"]}: {name} asked: {asked[:500]}\nNote: {text}'
                         '\n\nReply to this message with your answer.')
             elif draft:
                 body = f'Draft for {route.get("label") or message["chat"]} → reply to {name}:\n\n{body}'
@@ -946,18 +1040,22 @@ class App:
         marks = ','.join('?' for _ in routes) or 'NULL'
         with self.transaction():
             # A request another thread holds (forwarded or handed over) is context here, not this thread's work.
-            messages = self.rows(f'SELECT m.*,CASE WHEN r.thread=? THEN r.id END AS request_id,'
-                                 f'CASE WHEN r.thread=? THEN r.state END AS state,r.promise,r.promise_due,'
-                                 f'CASE WHEN r.thread!=? THEN r.id END AS other_request,'
-                                 f'CASE WHEN r.thread!=? THEN r.thread END AS other_thread,a.request_id AS answers_request FROM messages m '
-                                 f'LEFT JOIN requests r ON r.message_id=m.id LEFT JOIN owner_answers a ON a.message_id=m.id '
-                                 f'LEFT JOIN requests ar ON ar.id=a.request_id '
-                                 f'WHERE m.route IN ({marks}) AND (m.ts>=? OR (m.ts=0 AND m.first_seen>=?) OR r.state IN {OPEN} OR ar.state IN {OPEN}) '
-                                 f'ORDER BY m.chat,m.ts,m.id',
-                                 (thread, thread, thread, thread, *sorted(routes), self.fx.now() - self.settings['context_hours'] * 3600,
+            # One row per message, or per request of this thread when it holds several parts of one message.
+            # A request held by the router is nobody's yet, so its message is plain context.
+            other = 'SELECT {} FROM requests o WHERE o.message_id=m.id AND o.thread!=? AND o.routing IS NULL ORDER BY o.id LIMIT 1'
+            messages = self.rows(f'SELECT m.*,r.id AS request_id,r.state,r.promise,r.promise_due,r.part,r.part_label,r.route_reason,'
+                                 f'({other.format("o.id")}) AS other_request,({other.format("o.thread")}) AS other_thread,'
+                                 f'a.request_id AS answers_request FROM messages m '
+                                 f'LEFT JOIN requests r ON r.message_id=m.id AND r.thread=? AND r.routing IS NULL '
+                                 f'LEFT JOIN owner_answers a ON a.message_id=m.id LEFT JOIN requests ar ON ar.id=a.request_id '
+                                 f'WHERE m.route IN ({marks}) AND (m.ts>=? OR (m.ts=0 AND m.first_seen>=?) OR ar.state IN {OPEN} '
+                                 f'OR EXISTS (SELECT 1 FROM requests o WHERE o.message_id=m.id AND o.state IN {OPEN})) '
+                                 f'ORDER BY m.chat,m.ts,m.id,r.id',
+                                 (thread, thread, thread, *sorted(routes), self.fx.now() - self.settings['context_hours'] * 3600,
                                   self.fx.now() - self.settings['context_hours'] * 3600))
             # The thread has now seen any edit or owner answer, so `toucan wait` stops reporting it.
-            self.db.execute(f'UPDATE requests SET change_pending=0 WHERE thread=? AND change_pending=1 AND state IN {OPEN}', (thread,))
+            self.db.execute(f'UPDATE requests SET change_pending=0 WHERE thread=? AND change_pending=1 AND state IN {OPEN} '
+                            'AND routing IS NULL', (thread,))
             self.record('inbox', thread, count=len(messages))
         return messages
 

@@ -15,8 +15,8 @@ DEFAULTS = dict(rewake_minutes=15, wake_gap_minutes=2, max_wakes=3, claimed_stal
                 rotate_stall_minutes=60, owner_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
                 alert_url_file='', upload_command='toucan-upload-loom', transcribe='', followup_minutes=120,
                 router_general_thread='', router_commands=(), router_timeout_seconds=60, router_history=20,
-                router_budget_seconds=90)
-ROUTER_MODES = ('off', 'shadow')
+                router_budget_seconds=90, router_hold_minutes=5, router_ask_minutes=15, max_bounces=2)
+ROUTER_MODES = ('off', 'shadow', 'live')
 ROUTER_BUDGET_MAX = 180  # seconds; keeps a sync well inside the timer unit's 5-minute timeout
 PHONE = re.compile(r'^\d+@s\.whatsapp\.net$')
 JID = re.compile(r'^\d+@(s\.whatsapp\.net|lid|g\.us)$')
@@ -96,7 +96,7 @@ def validate(cfg):
             value = settings[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < float('inf'):
                 raise ValidationError(f'settings.{key} must be positive')
-    for key in ('max_wakes', 'rate_per_hour', 'rotate_tokens', 'router_history'):
+    for key in ('max_wakes', 'rate_per_hour', 'rotate_tokens', 'router_history', 'max_bounces'):
         if not isinstance(settings[key], int):
             raise ValidationError(f'settings.{key} must be an integer')
     for key in TEXT_SETTINGS & settings.keys():
@@ -211,10 +211,8 @@ def validate(cfg):
         if not isinstance(route.get('thread'), str) or route['thread'] not in threads:
             raise ValidationError(f'route {name}: unknown thread')
         router = route.setdefault('router', 'off')
-        if router == 'live':
-            raise ValidationError(f'route {name}: router = "live" is not available yet; use "shadow" to log decisions')
         if router not in ROUTER_MODES:
-            raise ValidationError(f'route {name}: router must be "off" or "shadow"')
+            raise ValidationError(f'route {name}: router must be "off", "shadow" or "live"')
         if router != 'off' and not general:
             raise ValidationError(f'route {name}: router needs settings.router_general_thread, the thread for off-topic requests')
         if not isinstance(route.get('requesters'), list) or not route['requesters']:

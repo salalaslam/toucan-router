@@ -418,8 +418,9 @@ def test_a_held_lease_skips_the_router_stage(world):
 # Configuration
 
 @pytest.mark.parametrize('change,error', [
-    (lambda t: t.replace('router = "shadow"', 'router = "live"'), 'not available yet'),
-    (lambda t: t.replace('router = "shadow"', 'router = "on"'), '"off" or "shadow"'),
+    (lambda t: t.replace('router = "shadow"', 'router = "on"'), '"off", "shadow" or "live"'),
+    (lambda t: t.replace('[settings]\n', '[settings]\nmax_bounces = 1.5\n'), 'max_bounces'),
+    (lambda t: t.replace('[settings]\n', '[settings]\nrouter_hold_minutes = 0\n'), 'router_hold_minutes'),
     (lambda t: t.replace('router_general_thread = "project-b"\n', ''), 'router_general_thread'),
     (lambda t: t.replace('router_general_thread = "project-b"', 'router_general_thread = "missing"'), 'router_general_thread'),
     (lambda t: t.replace('thread = "project-b"\n', 'thread = "missing"\n'), 'project project-b: thread'),
@@ -470,8 +471,10 @@ def test_add_and_remove_project_and_thread_refusal(world, monkeypatch, capsys):
     assert cli(*add[:-1], 'project-a', '--replace')['status'] == 'updated'
     assert 'thread' in cli('add', 'project', 'project-c', '--name', 'Project C', '--thread', 'missing', code=2)
     assert 'both use' in cli('add', 'project', 'project-c', '--name', 'Project C', '--alias', 'portal', '--thread', 'project-a', code=2)
-    assert 'not available yet' in cli('add', 'route', 'alice-whatsapp', '--source', 'whatsapp', '--chat', PHONE, '--requester', 'alice',
-                                      '--thread', 'project-a', '--mode', 'act', '--router', 'live', '--replace', code=2)
+    assert cli('add', 'route', 'alice-whatsapp', '--source', 'whatsapp', '--chat', PHONE, '--requester', 'alice',
+               '--thread', 'project-a', '--mode', 'act', '--router', 'live', '--replace')['status'] == 'updated'
+    assert 'router must be' in cli('add', 'route', 'alice-whatsapp', '--source', 'whatsapp', '--chat', PHONE, '--requester', 'alice',
+                                   '--thread', 'project-a', '--mode', 'act', '--router', 'on', '--replace', code=2)
     commands = '[["python3", "-c", "print(1)"]]'
     assert cli('config', 'set', 'settings.router_commands', commands)['status'] == 'updated'
     assert load(world.config_path)['settings']['router_commands'] == [['python3', '-c', 'print(1)']]

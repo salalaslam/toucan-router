@@ -19,7 +19,7 @@ fallback_minutes = 5
 rotate_tokens = 200000       # ask idle owner threads to hand over at this context size
 rotate_stall_minutes = 60    # alert if a handover has not finished by then
 # transcribe = "chatgpt-transcribe"   # voice notes become text before they reach a thread
-# The router (routes with router = "shadow") logs which thread it would pick for each request.
+# The router: routes with router = "shadow" log which thread it would pick; router = "live" sends requests there.
 # router_general_thread = "general"   # thread for off-topic requests; required once a route uses the router
 # router_commands = [                   # tried in order; each reads the prompt on stdin, prints one JSON object
 #   ["claude", "-p", "--model", "claude-haiku-5-5", "--tools", "", "--no-session-persistence"],
@@ -29,6 +29,9 @@ rotate_stall_minutes = 60    # alert if a handover has not finished by then
 # router_timeout_seconds = 60   # per router command
 # router_budget_seconds = 90    # router command time per sync; the rest wait for the next sync
 # router_history = 20           # the person's earlier messages the router sees
+# router_hold_minutes = 5       # live: an undecided request goes to the route's thread after this long
+# router_ask_minutes = 15       # live: how long the person has to answer "Which project is this about?"
+# max_bounces = 2               # live: after this many bounces a request is escalated to the owner
 
 [people.alice]
 name = "Alice Example"
@@ -63,7 +66,7 @@ thread = "project-a"
 mode = "act"
 requesters = ["alice"]
 active_from = "2026-10-17T00:00:00+00:00"
-# router = "shadow"   # log which thread the router would pick; routing stays as it is
+# router = "shadow"   # log which thread the router would pick; routing stays as it is ("live" routes for real)
 
 # The owner's own 1:1 with the assistant number: their messages there become requests.
 # [people.owner]

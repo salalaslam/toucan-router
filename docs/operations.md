@@ -94,7 +94,9 @@ holds to another configured thread. A new request moves as it is. A claimed requ
 current `--claim`; otherwise the command refuses (exit 3) and says to pass the claim or
 release it first. Either way the request arrives at the target as new and unclaimed, with a
 fresh wake budget, and keeps any promise already made. Done, escalated and closed requests,
-and requests with a delivery in progress, can't be forwarded.
+and requests with a delivery in progress, can't be forwarded, nor can a request the router
+is still holding. On a live-routed chat, a thread that doesn't know the right thread uses
+[`toucan bounce`](#bouncing-a-request) instead.
 
 The `forwarded` event records the old thread, the new one and the reason. The target's
 `toucan wait` reports it at once and the next sync wakes the target. Its inbox then shows that
@@ -104,14 +106,19 @@ it can't claim it. Requests handed to a fallback thread show the same way.
 
 ## The router
 
-Each route normally sends every request to its one `thread`. The router is being built so
-that Toucan can pick the thread for each request instead. For now it runs only in shadow
-mode: set `router = "shadow"` on a route and it decides and logs where each new request would
-go. Requests still go to the route's thread, and wakes and replies don't change.
+Each route normally sends every request to its one `thread`. The router lets Toucan pick the
+thread for each request instead. A route's `router` setting has three values:
+
+- `"off"` (default): every request goes to the route's thread.
+- `"shadow"`: the router decides and logs where each new request would go, and changes
+  nothing. Requests still go to the route's thread, and wakes and replies don't change.
+- `"live"`: requests go where the router decides (see [Live routing](#live-routing)). The
+  route's thread becomes its default: where requests go when the router can't decide.
 
 It needs `[projects.KEY]` tables, `settings.router_general_thread`, and usually
-`settings.router_commands` (see [configuration](configuration.md)). Requests created before a
-route's router was switched on are not decided.
+`settings.router_commands` (see [configuration](configuration.md)). On a shadow route,
+requests created before the router was switched on are not decided; on a live route, only
+requests created while it is live are routed.
 
 For each new request it tries these steps in order and stops at the first that answers:
 
@@ -152,7 +159,8 @@ The answer must be one JSON object, optionally inside one Markdown code fence:
 
 When a step uses an earlier request's thread, it uses that request's own decision while
 routing is shadowed, unless a thread has forwarded the request, in which case it uses where it
-went.
+went. On a live route it uses the thread the request is in now. Steps 1 and 3 skip a message
+that was split across threads, since it has no single thread to follow.
 
 Example commands, each with tools turned off:
 
@@ -185,9 +193,114 @@ nothing.
 
 Events: `route_shadow` (one per decision, with step, kind, decided threads, reason, command
 index, latency and each failed attempt's outcome), `route_shadow_deferred`, `route_shadow_failed`
-and `route_marked`. `toucan status` has a `router` object (last run, last command success,
-failure count over 24 hours, pending decisions), and `toucan doctor` adds `router.commands` and
-`router.health`.
+(`router_failed` once any route is live) and `route_marked`. Live routes add the events listed
+under [Live routing](#live-routing). `toucan status` has a `router` object (last run, last
+command success, failure count over 24 hours, pending decisions, and on live routes the number
+held and waiting for an answer) and a `held` list, and `toucan doctor` adds `router.commands`
+and `router.health`. `router.health` warns when a held request is more than two minutes past
+`router_hold_minutes`, which means syncs aren't running.
+
+### Live routing
+
+With `router = "live"`, sync applies each decision:
+
+1. **Rules first, no delay.** Steps 1 to 3 run inside sync as the request is created, so a
+   request they place is in its thread before that sync's wakes go out. The inbox tells the
+   thread why ("routed here because names Project B").
+2. **Held for the router command.** A request the rules can't place is held: it is not woken,
+   not in any thread's inbox as a request, can't be claimed or forwarded, and isn't handed to a
+   fallback thread. The router stage after the sync decides it and wakes the thread in the same
+   sync, using the usual wake gap and wake budget. A request whose earlier request (the one it
+   replies to or follows) is itself held waits for that one first.
+3. **Never stranded.** A request not decided within `router_hold_minutes` (default 5), for
+   example because every command timed out or another sync held the router lease, goes to the
+   route's thread with reason `router timed out`, and raises a `router:timeout:REQ` alert.
+   Switching a route to `"shadow"` or `"off"`, or removing it, hands its held requests to the
+   route's thread at the next sync (decision `released`). A router stage failure doesn't fail
+   the sync; held requests then time out as above.
+4. **After assignment it is an ordinary request.** Rate-limit handover to a thread's fallback,
+   `toucan forward`, `owner_reply_closes`, owner answers to escalations and `toucan resume`
+   all work as before.
+
+Every live decision is a `router_decisions` row with mode `live`, so `toucan router review`,
+`mark` and `stats` cover live routing too. A request decided again after a bounce has several
+rows; `mark` marks the latest. Extra decision kinds: `answer` and `no_answer` (step 6, a
+question to the person), `fallback` (step 6, a question that couldn't be asked), `timeout`
+(step 5) and `released` (step 0).
+
+Events: `route_held`, `routed` (a request got its thread, by any step), `route_live` (the
+router stage's decision, with each failed attempt, like `route_shadow`), `route_live_deferred`,
+`route_split`, `router_asked`, `router_answered`, `route_discarded` (a decision that arrived
+after the request had already timed out or been answered), `bounced`, `bounce_escalation_failed`,
+`promise_not_sent` and `reaction_kept`.
+
+`toucan sync --dry-run` places requests with the rules in its in-memory copy, reports which
+held requests would need a command, and sends nothing. `toucan sync --shadow` never asks
+anyone a question; held requests it can't place fall back to the route's thread.
+
+### Bouncing a request
+
+```sh
+toucan bounce 42 --thread project-b --reason 'This is about the portal' --json   # add --claim ID if claimed
+```
+
+A thread that gets a request that isn't its runs `toucan bounce`. Claim rules are the same as
+`toucan forward`: a new request, or a claimed one with its current claim. The request goes
+back to the router, held as above, and is decided again without any thread that has bounced
+it: a rule that would pick such a thread falls through to the next step, the router command's
+prompt lists those threads' projects as excluded, and an answer that picks one anyway becomes
+a question. The general thread can be excluded too. When the router can't place it, it goes to
+the route's thread, or the general thread if the route's thread bounced it.
+
+After `max_bounces` (default 2) bounces the request is escalated to the owner on WhatsApp
+instead, through the usual escalation path, from the route's thread, which gets the owner's
+answer back. If that escalation can't be sent, the request is a new request in the route's
+thread and the command exits 1. A bounce on a route that isn't live is refused (exit 3) with a
+pointer to `toucan forward`.
+
+### Split requests
+
+When the router command answers `split` on a live route, the message becomes one request per
+thread. The first keeps the original request id; the others are new requests on the same
+message. Each has the part of the message it covers (`part`) and a label made from its project
+names (`part_label`). Parts whose projects share a thread become one request. A part that is
+bounced and then split again is asked about instead.
+
+- The inbox shows the part first: "This request is only this part of the message: ...", then
+  the whole message, and names the thread that has another part.
+- `toucan reply` starts every reply and draft for a part with its label, as in
+  `Project B: rerun done`, unless the text already starts that way.
+- One acknowledgement per message. On Teams, the bot's reaction is shared: a second `toucan
+  react` with the same emoji on the same message does nothing, and removing it does nothing
+  while another part is still open. On every route, a `--promise` reply is recorded (promise
+  and due time) but not sent when another part of the same message already had a reply sent;
+  `--final` and `--keep-open` replies are always sent.
+- An edit or deletion of the message flags every part.
+
+### Asking the person
+
+When the decision is `ask` on a live route (the command is unsure, every command failed, or the
+router hit an error), Toucan sends the person one question the way a reply would go, through
+the outbox (with no request id), counted against `rate_per_hour`:
+
+- `Which project is this about: Project A or Project B?` when the command named two to four
+  candidate projects;
+- otherwise `Which project is this about? ` followed by the projects the person's recent
+  requests went to, or every project name if there are none.
+
+Their next message in the same chat within `router_ask_minutes` (default 15) that names exactly
+one project answers it: the request goes to that project's thread and is woken in that sync,
+and the answer message is context, not a new request. If several questions to them are open,
+an answer that quotes one answers that one, otherwise the latest. Anything else they send in
+that window is handled as usual and the question stays open. With no answer in time the request
+goes to the route's thread with reason `no answer to the question`. A request is never asked
+about twice.
+
+A question can only go where the answer will come from, so Toucan asks only on WhatsApp `act`
+routes without `reply_to`, and on Teams `act` routes with `post_as_bot`. On other routes, when
+the hourly limit is reached, or when the question fails to send, the request goes to the
+route's thread straight away (decision `fallback`). A question whose delivery is uncertain is
+treated as asked.
 
 ### Reviewing decisions
 

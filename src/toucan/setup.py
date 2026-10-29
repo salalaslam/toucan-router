@@ -284,7 +284,8 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
         commands = settings['router_commands']
         missing = [c[0] for c in commands if not shutil.which(c[0])]
         add('router.commands', 'router', 'warn' if missing or not commands else 'ok',
-            'No router_commands: requests the rules cannot place are logged as router unavailable' if not commands else
+            ('No router_commands: requests the rules cannot place are logged as router unavailable, and on live routes '
+             'the person is asked') if not commands else
             'Router commands not on PATH: ' + ', '.join(missing) if missing else f'{len(commands)} router commands available',
             'configuration')
         status, message = 'skip', 'Router has not run yet'
@@ -296,14 +297,22 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
                 finally:
                     db.close()
                 stuck = info['oldest_pending'] is not None and fx.now() - info['oldest_pending'] > 1800
-                bad = info['stage_error'] or info['unavailable_streak'] >= router.UNAVAILABLE_ALERT or stuck
+                # A held request leaves after router_hold_minutes; one still held two minutes later means syncs aren't running.
+                late = (info['oldest_held'] is not None and
+                        fx.now() - info['oldest_held'] > settings['router_hold_minutes'] * 60 + 120)
+                bad = info['stage_error'] or info['unavailable_streak'] >= router.UNAVAILABLE_ALERT or stuck or late
                 status = 'warn' if bad else 'ok' if info['last_run'] else 'skip'
                 ago = lambda ts: f'{(fx.now() - ts) / 60:.0f} min ago' if ts else 'never'
-                message = (f'Router shadow on {", ".join(info["routes"])}: last run {ago(info["last_run"])}, '
-                           f'last router command success {ago(info["last_success"])}, {info["pending"]} pending, '
+                shadow = [r for r in info['routes'] if r not in info['live_routes']]
+                where = '; '.join(f'{mode} on {", ".join(names)}' for mode, names in
+                                  (('live', info['live_routes']), ('shadow', shadow)) if names)
+                message = (f'Router {where}: last run {ago(info["last_run"])}, '
+                           f'last router command success {ago(info["last_success"])}, {info["pending"]} pending, ' +
+                           (f'{info["held"]} held, {info["asked"]} waiting for an answer, ' if info['live_routes'] else '') +
                            f'{info["failures_24h"]} failures in 24h' +
                            (f'; last run failed ({info["stage_error"]["error"]})' if info['stage_error'] else '') +
-                           ('; requests have waited over 30 min for a decision' if stuck else ''))
+                           ('; requests have waited over 30 min for a decision' if stuck else '') +
+                           ('; held requests are past router_hold_minutes; is the sync timer running?' if late else ''))
             except (OSError, sqlite3.Error, ValueError, KeyError):
                 status, message = 'skip', 'Router state unavailable; it appears after the next sync'
         add('router.health', 'router', status, message, 'operations')
