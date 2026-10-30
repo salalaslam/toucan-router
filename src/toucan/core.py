@@ -705,7 +705,9 @@ class App:
             instructions += ('\n\na. Write a handoff brief for your successor inline (no files), under about 900 words, '
                              'with no secrets, tokens or hook URLs. Include people and chats and reply tone; environments, '
                              f"deploys and what needs {self.settings['owner_name']}'s OK; repo conventions; each open request with its id, claim id, "
-                             'promise, real state and exact next step; unfinished work with no request; recent history that '
+                             'promise, real state and exact next step; unfinished work with no request; each result you owe '
+                             'another T3 thread or are waiting on from one, with its thread link, what was asked, and that '
+                             'the reply goes to that thread with t3_thread_send; recent history that '
                              f'matters; things {self.settings["owner_name"]} corrected or asked for.\n'
                              'b. Read your model selection and modes with t3_thread_configuration, then launch the successor '
                              'with t3_thread_launch: same project, workspaceStrategy {type:"root"}, the same modelSelection '
