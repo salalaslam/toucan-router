@@ -20,6 +20,7 @@ Secrets never go in this file. Webhook URLs live in hook files and the alert URL
 | `owner_name` | `"the owner"` | Your name, as agents see it in prompts and escalations. |
 | `owner_teams_id` | none | Your Entra object ID. Toucan uses it to tell your messages in Teams chats from everyone else's. Needed when any route uses Teams. |
 | `owner_whatsapp` | none | Your personal WhatsApp JID (`15550000000@s.whatsapp.net`). Drafts and escalations go here. Required before any draft or escalation can be sent. |
+| `drafts_whatsapp` | `owner_whatsapp` | Where drafts for you to post go instead: a phone JID, or a group JID (`120363000000000000@g.us`) such as an alerts group with only you in it. Escalation cards and the daily list always go to `owner_whatsapp`. |
 | `timezone` | `"UTC"` | IANA zone used for every time Toucan shows (`Europe/London`, `America/New_York`). |
 | `alert_url` | none | URL that receives alerts. See [setup-alerts.md](setup-alerts.md). |
 | `alert_url_file` | none | Mode-600 file containing the alert URL, for secret ntfy topics. When set, it wins over `alert_url` and must contain a valid HTTP URL. |

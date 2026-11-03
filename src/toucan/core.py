@@ -4,12 +4,12 @@ import shlex
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import router, sources, t3
-from .config import PHONE, Refused, ValidationError, hook_warning, prefixed, reply_phone
+from . import cards, router, sources, t3
+from .config import GROUP, PHONE, Refused, ValidationError, hook_warning, prefixed, reply_phone
 from .effects import Effects
 from .storage import account_warning, event, insert, private_dir
 
@@ -39,6 +39,7 @@ class App:
         self.fx, self.paths, self.dry = effects or Effects(), paths or sources.Paths.from_config(cfg), dry
         self.settings = cfg['settings']
         self.local = lambda ts: local(ts, self.settings['timezone'])
+        self.queued = []  # owner notices queued inside a sync transaction, sent after it commits
 
     @contextmanager
     def transaction(self):
@@ -380,6 +381,7 @@ class App:
             self.reconcile_alerts(problems)
             self.db.execute("INSERT OR REPLACE INTO meta VALUES ('last_sync',?)", (str(now),))
             self.record('sync', ingested=report['ingested'], created=len(report['created']), dry=self.dry)
+        self.flush_notices(report['problems'])
         # After the transaction: router commands can take seconds, and wakes have already gone out.
         try:
             report['router'] = router.run(self, now)
@@ -398,24 +400,32 @@ class App:
     def owner_answers(self, mapping, now, problems):
         """Hand escalated requests back to their thread when the owner answers on WhatsApp.
 
-        A message answers an escalation when it quotes it. An unquoted message answers the
-        escalation sent just before it, or else the only escalation open when it was sent; with
-        several open it alerts instead. Unquoted forwards and caption-less documents never answer.
-        When that chat is also a route, only the first rule and the one
-        after it apply, and anything else becomes a request; otherwise it is never stored."""
+        A message that starts with a card ID ("T435 B") answers that card. Otherwise a message
+        answers an escalation when it quotes it; an unquoted one answers the escalation sent just
+        before it, or else the only escalation open when it was sent. With several open, Toucan asks
+        once which card it is for. "more" (quoted, or "more T435") sends the card's full detail.
+        A bare letter answers with that option spelled out. Unquoted forwards and caption-less
+        documents never answer. When that chat is also a route, only card IDs, quotes and the
+        message just after an escalation answer, and anything else becomes a request."""
         sent = self.rows("SELECT o.external_id,o.text AS sent_text,o.created_at AS sent_at,r.id,r.thread,r.route,r.state,r.closed_at "
                          "FROM outbox o JOIN requests r ON r.id=o.request_id WHERE o.kind='escalation' AND o.state='sent'")
+        # Cards held for the daily list, or sent there, have no escalation message of their own.
+        carded = self.rows("SELECT c.request_id AS id,c.created_at AS sent_at,r.thread,r.route,r.state,r.closed_at "
+                           "FROM cards c JOIN requests r ON r.id=c.request_id WHERE c.closed_at IS NULL AND r.state!='closed'")
         waiting = [w for w in sent if w['state'] != 'closed']
-        if not waiting:
+        if not waiting and not carded:
             return []
         owner = self.settings['owner_whatsapp']
         chats = self.owner_chats(mapping)
         routed = {c for r in self.cfg['routes'] if r['source'] == 'whatsapp' for c in r['chats']} & set(chats)
         by_id = {w['external_id']: w for w in waiting if w['external_id']}
         by_text = {w['sent_text']: w for w in waiting}
-        by_request = {w['id']: w for w in waiting}
+        by_request = {**{w['id']: w for w in carded}, **{w['id']: w for w in waiting}}
+        for row in self.db.execute("SELECT key,value FROM meta WHERE key LIKE 'quote:%'"):
+            if int(row['value']) in by_request:
+                by_id[row['key'][6:]] = by_request[int(row['value'])]  # a card's "more" detail message
         answered, last_out = [], None
-        for row in sources.owner_chat(self.paths, chats, min(w['sent_at'] for w in waiting) - 60):
+        for row in sources.owner_chat(self.paths, chats, min(w['sent_at'] for w in waiting + carded) - 60):
             if row['from_me']:
                 last_out = row['msg_id']
                 if last_out not in by_id and row['text'] in by_text:
@@ -423,7 +433,33 @@ class App:
                 continue
             if mapping.get(row['sender_jid'], row['sender_jid']) != owner:
                 continue
-            if row['quoted_msg_id']:
+            said = raw = row['text'] or row['display_text'] or row.get('media_caption') or ''
+            if row.get('is_forwarded') and not row['quoted_msg_id']:
+                continue  # forwarded material is something to look at, not an answer or a command
+            old = self.db.execute("SELECT * FROM messages WHERE source='whatsapp' AND account=? AND chat=? AND msg_id=?",
+                                  (self.paths.wa_account, row['chat_jid'], row['msg_id'])).fetchone()
+            deleted = int(bool(row['revoked'] or row.get('deleted_for_me')))
+            if old and ((old['own_text'] if old['own_text'] is not None else old['text']), old['edited'], old['deleted']) == (
+                    raw or old['own_text'] or old['text'], int(bool(row['edited'])), deleted):
+                continue  # handled on an earlier sync, and unchanged since
+            more = cards.MORE.match(said)
+            tagged = None if more else cards.CARD_ID.match(said)
+            if tagged and cards.MORE.match(tagged[2]):
+                more, tagged = cards.MORE.match('more ' + tagged[1]), None  # "T435 more"
+            if tagged:
+                target = by_request.get(int(tagged[1]))
+                if not target:
+                    self.notice_once(row['msg_id'], f'{cards.card_id(tagged[1])} isn\'t waiting on you.' + self.open_cards_hint(by_request))
+                    continue
+                said = tagged[2].strip()
+                if not said and not row.get('media_type'):
+                    continue  # just the ID; nothing to hand back
+            elif more and more[1]:
+                target = by_request.get(int(more[1]))
+                if not target:
+                    self.notice_once(row['msg_id'], f'{cards.card_id(more[1])} isn\'t waiting on you.' + self.open_cards_hint(by_request))
+                    continue
+            elif row['quoted_msg_id']:
                 target = by_id.get(row['quoted_msg_id'])
             elif row.get('is_forwarded') or (row['media_type'] == 'document' and not (row['text'] or row.get('media_caption'))):
                 continue  # forwarded material and bare files are something to look at, not an answer
@@ -431,38 +467,42 @@ class App:
                 target = by_id.get(last_out)
             else:
                 live = {w['id'] for w in sent if w['sent_at'] <= row['ts'] and (w['closed_at'] is None or w['closed_at'] > row['ts'])}
+                live |= {w['id'] for w in carded if w['sent_at'] <= row['ts']}
                 target = by_id.get(last_out) or (by_request.get(next(iter(live))) if len(live) == 1 else None)
                 if not target and len(live) > 1:
-                    problems['ambiguous:' + row['msg_id']] = (f'Your {self.local(row["ts"])} WhatsApp message could answer escalated '
-                                                              f'requests {", ".join(map(str, sorted(live)))}; reply to the one you mean')
+                    ids = ', '.join(cards.card_id(i) for i in sorted(live))
+                    self.notice_once(row['msg_id'], f'Which card is that for? Send it again starting with the ID: {ids}.')
             if not target:
                 continue
+            if more:
+                self.send_detail(row, target, raw)
+                continue
+            card = self.open_card(target['id'])
+            if card:
+                said = cards.expand(said, json.loads(card['options_json'] or '[]'))
             attachments = [{k: row[k] for k in ('media_type', 'filename', 'local_path') if row.get(k)}]
-            note = dict(text=row['text'] or row['display_text'] or row.get('media_caption') or '',
-                        attachments_json=json.dumps([a for a in attachments if a]))
+            note = dict(text=said, attachments_json=json.dumps([a for a in attachments if a]))
             if not self.voice(note, row['chat_jid'], row['msg_id']):
                 continue  # answered by voice; read it once transcribe() has the text
             text = note['text']
-            deleted = int(bool(row['revoked'] or row.get('deleted_for_me')))
-            old = self.db.execute("SELECT * FROM messages WHERE source='whatsapp' AND account=? AND chat=? AND msg_id=?",
-                                  (self.paths.wa_account, row['chat_jid'], row['msg_id'])).fetchone()
             if old:
-                if (old['text'], old['edited'], old['deleted']) == (text or old['text'], int(bool(row['edited'])), deleted):
-                    continue
-                self.db.execute('UPDATE messages SET text=?,edited=?,deleted=?,last_seen=? WHERE id=?',
-                                (text or old['text'], int(bool(row['edited'])), deleted, now, old['id']))
+                # own_text keeps what the owner typed ("T435 B"); text is what the thread reads.
+                self.db.execute('UPDATE messages SET text=?,own_text=?,edited=?,deleted=?,last_seen=? WHERE id=?',
+                                (text or old['text'], raw or old['own_text'], int(bool(row['edited'])), deleted, now, old['id']))
             elif deleted:
                 continue
             else:
                 message = insert(self.db, 'messages', source='whatsapp', account=self.paths.wa_account, chat=row['chat_jid'],
                                  msg_id=row['msg_id'], route=target['route'], sender_key='owner',
                                  sender_raw=row['sender_jid'], sender_name=row['sender_name'], is_owner=1, ts=row['ts'],
-                                 text=text, attachments_json=note['attachments_json'],
+                                 text=text, own_text=raw, attachments_json=note['attachments_json'],
                                  edited=int(bool(row['edited'])), deleted=0, first_seen=now, last_seen=now)
                 insert(self.db, 'owner_answers', message_id=message, request_id=target['id'])
             state = self.db.execute('SELECT state FROM requests WHERE id=?', (target['id'],)).fetchone()['state']
             if state == 'closed':
                 continue
+            self.db.execute('UPDATE cards SET answered_at=? WHERE request_id=? AND closed_at IS NULL AND answered_at IS NULL',
+                            (now, target['id']))
             if state == 'escalated':
                 self.db.execute("UPDATE requests SET state='new',claim_id=NULL,claimed_at=NULL,done_at=NULL,closed_at=NULL,"
                                 "close_reason=NULL,change_pending=0,wakes=0,last_wake_at=NULL WHERE id=?", (target['id'],))
@@ -471,6 +511,69 @@ class App:
             self.record('owner_answered', target['thread'], target['id'])
             answered.append(target['id'])
         return answered
+
+    def open_card(self, req):
+        return self.db.execute('SELECT * FROM cards WHERE request_id=? AND closed_at IS NULL ORDER BY id DESC LIMIT 1',
+                               (req,)).fetchone()
+
+    def open_cards_hint(self, by_request):
+        ids = [cards.card_id(r) for r, w in sorted(by_request.items()) if w['state'] == 'escalated']
+        return f' Open: {", ".join(ids)}.' if ids else ' Nothing is waiting on you.'
+
+    def notice_once(self, msg_id, text):
+        """A one-line reply to the owner about one of their messages, sent once."""
+        if self.db.execute('SELECT 1 FROM meta WHERE key=?', ('notice:' + msg_id,)).fetchone():
+            return
+        insert(self.db, 'meta', key='notice:' + msg_id, value=str(self.fx.now()))
+        self.queue_owner(text)
+
+    def queue_owner(self, text, req=None):
+        if self.shadow:
+            return None
+        out = self._queue_delivery(None, None, 'escalation', 'whatsapp', self.settings['owner_whatsapp'], text, None)
+        self.queued.append((out, req))
+        return out
+
+    def send_detail(self, row, target, raw):
+        """The owner replied "more": send the card's full context once. The message is stored with no
+        route, so no inbox shows it and an owner-chat route doesn't make it a request."""
+        now = self.fx.now()
+        old = self.db.execute("SELECT id FROM messages WHERE source='whatsapp' AND account=? AND chat=? AND msg_id=?",
+                              (self.paths.wa_account, row['chat_jid'], row['msg_id'])).fetchone()
+        if old:
+            self.db.execute('UPDATE messages SET text=?,own_text=?,edited=?,last_seen=? WHERE id=?',
+                            (raw, raw, int(bool(row['edited'])), now, old['id']))
+            return  # an edited "more" doesn't send the detail again
+        insert(self.db, 'messages', source='whatsapp', account=self.paths.wa_account, chat=row['chat_jid'],
+               msg_id=row['msg_id'], route=None, sender_key='owner', sender_raw=row['sender_jid'],
+               sender_name=row['sender_name'], is_owner=1, ts=row['ts'], text=raw, own_text=raw, attachments_json='[]',
+               edited=int(bool(row['edited'])), deleted=0, first_seen=now, last_seen=now)
+        card = self.open_card(target['id'])
+        req = self.db.execute('SELECT r.*,m.text AS asked FROM requests r JOIN messages m ON m.id=r.message_id WHERE r.id=?',
+                              (target['id'],)).fetchone()
+        name = self.cfg['people'].get(req['reply_person'], {}).get('name', 'someone')
+        if card:
+            text = cards.detail(card, req['thread'], name, req['part'] or req['asked'])
+        else:
+            last = self.db.execute("SELECT text FROM outbox WHERE request_id=? AND kind='escalation' AND state='sent' "
+                                   'ORDER BY id DESC LIMIT 1', (target['id'],)).fetchone()
+            text = last['text'] if last else f'No detail stored for {cards.card_id(target["id"])}.'
+        self.queue_owner(text, target['id'])
+        self.record('card_detail', req['thread'], target['id'])
+
+    def flush_notices(self, problems):
+        queued, self.queued = self.queued, []
+        if self.dry or self.shadow:
+            return
+        for out, req in queued:
+            try:
+                result = self._send_outbox(out, None)
+            except Exception:
+                problems[f'notice:{out}'] = f'Outbox {out}: a notice to the owner failed; inspect outbox'
+                continue
+            if req and result.get('external_id'):
+                with self.transaction():
+                    self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('quote:' + result['external_id'], str(req)))
 
     def pending(self, thread):
         return self.rows("SELECT r.*,m.ts FROM requests r JOIN messages m ON m.id=r.message_id "
@@ -806,8 +909,9 @@ class App:
             row = self.get(req, thread=thread)
             if row['state'] != 'escalated':
                 raise Refused('only an escalated request can be resumed')
-            asked = self.db.execute("SELECT max(created_at) FROM outbox WHERE request_id=? AND kind='escalation' AND state='sent'",
-                                    (req,)).fetchone()[0]
+            asked = self.db.execute("SELECT max(t) FROM (SELECT max(created_at) AS t FROM outbox WHERE request_id=? "
+                                    "AND kind='escalation' AND state='sent' UNION ALL SELECT max(ts) FROM events "
+                                    "WHERE request_id=? AND kind IN ('card_updated','card_held'))", (req, req)).fetchone()[0]
             try:
                 said = sources.owner_said(self.paths, self.live_thread(thread), asked)
                 if said is None:
@@ -819,6 +923,8 @@ class App:
             claim_id = str(uuid.uuid4())
             self.db.execute("UPDATE requests SET state='claimed',claim_id=?,claimed_at=?,done_at=NULL,change_pending=0,"
                             "wakes=0,last_wake_at=NULL WHERE id=?", (claim_id, self.fx.now(), req))
+            self.db.execute('UPDATE cards SET answered_at=? WHERE request_id=? AND closed_at IS NULL AND answered_at IS NULL',
+                            (self.fx.now(), req))
             self.record('owner_resumed', thread, req, claim_id=claim_id, t3_message=said[-1]['id'])
             return dict(claim_id=claim_id, owner_said=[m['text'] for m in said])
 
@@ -921,12 +1027,12 @@ class App:
         with self.transaction():
             out = self._queue_delivery(None, thread, 'draft' if draft else 'send',
                                        'teams-bot' if as_bot else 'whatsapp',
-                                       self.settings['owner_whatsapp'] if draft else phone if teams_direct else chat, body, file,
+                                       self.drafts_chat() if draft else phone if teams_direct else chat, body, file,
                                        route=route_name, chat=chat)
         return self._send_outbox(out, thread)
 
     def deliver(self, req, claim, text='', file=None, caption='', keep_open=False, escalation=False, thread=None,
-                promise=None, due=None):
+                promise=None, due=None, card=None):
         if not claim:
             raise Refused('current claim required')
         with self.transaction():
@@ -941,7 +1047,7 @@ class App:
             teams_direct = row['reply_source'] == 'teams' and row['mode'] == 'act' and route.get('reply_via_whatsapp', False) and phone and not as_bot
             draft = row['mode'] == 'draft' or (row['reply_source'] == 'teams' and not teams_direct and not as_bot)
             kind = 'escalation' if escalation else 'draft' if draft else 'send'
-            recipient = (self.settings['owner_whatsapp'] if kind != 'send'
+            recipient = (self.settings['owner_whatsapp'] if kind == 'escalation' else self.drafts_chat() if kind == 'draft'
                          else row['reply_chat'] if as_bot else phone if teams_direct else row['reply_chat'])
             # Ambiguous attempts must be resolved by a person before another send.
             if self.db.execute("SELECT 1 FROM outbox WHERE request_id=? AND state IN ('pending','sending','uncertain')", (req,)).fetchone():
@@ -963,21 +1069,71 @@ class App:
                             reason='another part of this message already had a reply, so this promise was recorded but not sent; '
                                    'send the result with --final when it is ready')
             body = prefixed(route, caption if file else text)
+            card_row = None
             if escalation:
-                asked = row['part'] or message['text'] or ''
-                body = (f'Escalation from thread {row["thread"]}: {name} asked: {asked[:500]}\nNote: {text}'
-                        '\n\nReply to this message with your answer.')
+                body, card_row, outcome = self._card(row, name, row['part'] or message['text'] or '', text, card)
+                if body is None:
+                    return dict(outbox=None, state='escalated', card=cards.card_id(req), sent=False, outcome=outcome,
+                                reason=('same question as the open card, so the note was added to that card without a new '
+                                        'message; the owner sees it in the daily list' if outcome == 'updated' else
+                                        'held for the daily list, which shows the owner every card waiting on them'))
             elif draft:
                 body = f'Draft for {route.get("label") or message["chat"]} → reply to {name}:\n\n{body}'
             out = self._queue_delivery(req, row['thread'], kind, 'teams-bot' if as_bot else 'whatsapp', recipient, body, file)
-        return self._send_outbox(out, row['thread'], req, keep_open, promise, due)
+            if card_row:
+                self.db.execute('UPDATE cards SET outbox_id=? WHERE id=?', (out, card_row))
+        result = self._send_outbox(out, row['thread'], req, keep_open, promise, due)
+        return dict(result, card=cards.card_id(req)) if escalation else result
+
+    def drafts_chat(self):
+        chat = self.settings['drafts_whatsapp']
+        return chat if PHONE.fullmatch(chat) or GROUP.fullmatch(chat) else self.settings['owner_whatsapp']
+
+    def escalate(self, req, claim, category, want, question, options, pick, note='', thread=None):
+        """The only way a thread escalates: a card that passes the gate in cards.validate."""
+        want, question, options, index = cards.validate(category, want, question, options, pick)
+        return self.deliver(req, claim, text=note, escalation=True, thread=thread,
+                            card=dict(category=category, want=want, question=question, options=options, pick=index))
+
+    def _card(self, row, name, asked, note, card):
+        """Inside deliver's transaction: store the card and return (body, card id, outcome). Body is None
+        when nothing is sent: the same question as the open card only adds the note to it, and a
+        request handed back for re-triage keeps its new card for the daily list."""
+        now = self.fx.now()
+        if card is None:  # Toucan's own escalations, such as a request no thread would take
+            want = cards.one_line(asked)
+            card = dict(category=cards.ROUTING, want=want if len(want) <= 100 else want[:99] + '…',
+                        question=cards.one_line(note), options=[], pick=None)
+        last = self.db.execute("SELECT c.*,o.state AS out_state FROM cards c LEFT JOIN outbox o ON o.id=c.outbox_id "
+                               'WHERE c.request_id=? AND c.closed_at IS NULL ORDER BY c.id DESC LIMIT 1', (row['id'],)).fetchone()
+        live = bool(last and (last['held'] or last['out_state'] == 'sent'))
+        if live and cards.same_question(last['question'], card['question']):
+            updates = json.loads(last['updates_json'] or '[]') + [dict(at=self.local(now), note=note)]
+            self.db.execute('UPDATE cards SET updates_json=?,answered_at=NULL WHERE id=?', (json.dumps(updates), last['id']))
+            self.db.execute("UPDATE requests SET state='escalated',claim_id=NULL WHERE id=?", (row['id'],))
+            self.record('card_updated', row['thread'], row['id'], card=last['id'])
+            return None, last['id'], 'updated'
+        self.db.execute('UPDATE cards SET closed_at=? WHERE request_id=? AND closed_at IS NULL', (now, row['id']))
+        retriage = self.db.execute('SELECT value FROM meta WHERE key=?', (f'retriage:{row["id"]}',)).fetchone()
+        held = bool(retriage) and now - float(retriage['value']) < 3 * 86400
+        self.db.execute('DELETE FROM meta WHERE key=?', (f'retriage:{row["id"]}',))
+        card_row = insert(self.db, 'cards', request_id=row['id'], category=card['category'], want=card['want'],
+                          question=card['question'], options_json=json.dumps(card['options']), pick=card['pick'],
+                          detail=note, held=int(held), created_at=now)
+        if held:
+            self.db.execute("UPDATE requests SET state='escalated',claim_id=NULL WHERE id=?", (row['id'],))
+            self.record('card_held', row['thread'], row['id'], card=card_row)
+            return None, card_row, 'held'
+        body = cards.render(row['id'], row['thread'], name, card['want'], card['question'], card['options'], card['pick'],
+                            replaces=live and last['answered_at'] is None)
+        return body, card_row, 'sent'
 
     def _queue_delivery(self, req, thread, kind, source, recipient, body, file, **detail):
         if file and not Path(file).is_file():
             raise ValidationError('attachment file does not exist')
         if source == 'teams-bot' and file:
             raise ValidationError('the Toucan bot posts text only; send the file another way')
-        if not recipient or (kind != 'send' and not PHONE.fullmatch(recipient)):
+        if not recipient or (kind != 'send' and not PHONE.fullmatch(recipient) and not (kind == 'draft' and GROUP.fullmatch(recipient))):
             raise ValidationError('a valid owner_whatsapp phone JID is required')
         count = self.db.execute("SELECT count(*) FROM outbox WHERE to_chat=? AND state IN ('pending','sent','sending','uncertain') AND created_at>=?",
                                 (recipient, self.fx.now() - 3600)).fetchone()[0]
@@ -1040,6 +1196,61 @@ class App:
             raise RuntimeError('delivery uncertain; inspect outbox before sending again' if uncertain
                                else f'{argv[0]} failed; inspect outbox error')
         return dict(outbox=out, state='sent', external_id=external)
+
+    def digest(self):
+        """The once-a-day list for the owner: every card still waiting on them, and how many requests
+        threads settled without them yesterday. Sends nothing when nothing is waiting."""
+        now = self.fx.now()
+        zone = ZoneInfo(self.settings['timezone'])
+        today = datetime.fromtimestamp(now, zone).replace(hour=0, minute=0, second=0, microsecond=0)
+        start, end = (today - timedelta(days=1)).timestamp(), today.timestamp()
+        waiting = self.rows("SELECT c.*,r.thread,r.reply_person FROM cards c JOIN requests r ON r.id=c.request_id "
+                            "WHERE c.closed_at IS NULL AND c.answered_at IS NULL AND r.state='escalated' AND (c.held=1 OR "
+                            "EXISTS (SELECT 1 FROM outbox o WHERE o.id=c.outbox_id AND o.state='sent')) ORDER BY c.created_at,c.id")
+        legacy = self.rows("SELECT r.id,r.thread,r.reply_person FROM requests r WHERE r.state='escalated' "
+                           'AND NOT EXISTS (SELECT 1 FROM cards c WHERE c.request_id=r.id AND c.closed_at IS NULL) ORDER BY r.id')
+        handled = self.db.execute(
+            "SELECT count(*) FROM requests r WHERE r.state='closed' AND r.closed_at>=? AND r.closed_at<? "
+            "AND coalesce(r.close_reason,'') NOT IN ('owner replied','owner posted') "
+            'AND NOT EXISTS (SELECT 1 FROM cards c WHERE c.request_id=r.id) '
+            "AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='escalation')", (start, end)).fetchone()[0]
+        name = lambda key: self.cfg['people'].get(key, {}).get('name', 'someone')
+        since = lambda ts: datetime.fromtimestamp(ts, zone).strftime('%-d %b %H:%M')
+        report = dict(waiting=[cards.card_id(c['request_id']) for c in waiting] + [cards.card_id(r['id']) for r in legacy],
+                      handled_yesterday=handled, sent=False, text=None)
+        if not report['waiting']:
+            return report
+        blocks = [cards.compact(c, c['thread'], name(c['reply_person']), since(c['created_at'])) for c in waiting]
+        blocks += [f'*{cards.card_id(r["id"])}* {r["thread"]} · {name(r["reply_person"])}: older escalation; reply "more {cards.card_id(r["id"])}" to see it'
+                   for r in legacy]
+        first = report['waiting'][0]
+        text = (f'*Waiting on you: {len(report["waiting"])}*\n\n' + '\n\n'.join(blocks) +
+                f'\n\n{handled} handled without you yesterday.\nReply "{first} A" or "more {first}".')
+        report['text'] = text
+        if self.dry:
+            return report
+        with self.transaction():
+            out = self._queue_delivery(None, None, 'escalation', 'whatsapp', self.settings['owner_whatsapp'], text, None)
+        self._send_outbox(out, None)
+        with self.transaction():
+            # A held card now counts as delivered through this list, so later lists keep showing it.
+            self.db.execute('UPDATE cards SET held=0,outbox_id=? WHERE held=1 AND closed_at IS NULL', (out,))
+            self.record('digest', count=len(report['waiting']), handled=handled)
+        report['sent'] = True
+        return report
+
+    def retriage(self):
+        """Hand every escalation from before decision cards back to its thread. The thread settles
+        it, or escalates it again as a card, which waits for the next daily list."""
+        with self.transaction():
+            rows = self.rows("SELECT r.id,r.thread FROM requests r WHERE r.state='escalated' "
+                             'AND NOT EXISTS (SELECT 1 FROM cards c WHERE c.request_id=r.id) ORDER BY r.id')
+            for r in rows:
+                self.db.execute("UPDATE requests SET state='new',claim_id=NULL,claimed_at=NULL,done_at=NULL,change_pending=0,"
+                                'wakes=0,last_wake_at=NULL WHERE id=?', (r['id'],))
+                self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (f'retriage:{r["id"]}', str(self.fx.now())))
+                self.record('retriaged', r['thread'], r['id'])
+        return dict(requests=[r['id'] for r in rows], threads=sorted({r['thread'] for r in rows}))
 
     def inbox(self, thread):
         if thread not in self.cfg['threads']:

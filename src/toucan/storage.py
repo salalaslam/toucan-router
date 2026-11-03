@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS transcripts (
  chat TEXT, msg_id TEXT, path TEXT, text TEXT, attempts INTEGER DEFAULT 0, updated_at REAL,
  PRIMARY KEY(chat,msg_id));
 {decisions}
+CREATE TABLE IF NOT EXISTS cards (
+ id INTEGER PRIMARY KEY, request_id INTEGER REFERENCES requests(id), category TEXT, want TEXT, question TEXT,
+ options_json TEXT, pick INTEGER, detail TEXT, updates_json TEXT DEFAULT '[]', outbox_id INTEGER REFERENCES outbox(id),
+ held INTEGER DEFAULT 0, created_at REAL, answered_at REAL, closed_at REAL);
+CREATE INDEX IF NOT EXISTS card_request ON cards(request_id);
 CREATE TABLE IF NOT EXISTS alerts (key TEXT PRIMARY KEY, text TEXT, since REAL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 '''.replace('{requests}', REQUESTS.format(name='requests')).replace('{decisions}', DECISIONS.format(name='router_decisions'))

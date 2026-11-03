@@ -292,8 +292,8 @@ def test_escalation_sends_owner_excerpt_and_waits_for_answer(world):
     claim = world.app.claim([req], 'project-a')
     world.app.deliver(req, claim, text='Need your decision', escalation=True)
     assert world.sends == [['wacli', '--json', 'send', 'text', '--to', OWNER, '--message',
-                            'Escalation from thread project-a: Alice Example asked: ' + 'x' * 500 + '\nNote: Need your decision'
-                            '\n\nReply to this message with your answer.']]
+                            f'*T{req}* · project-a · Alice Example\nWants: ' + 'x' * 99 + '…\nDecide: Need your decision\n'
+                            f'Reply "T{req} your answer", quote this, or "more"']]
     row = world.app.get(req)
     assert (row['state'], row['closed_at'], row['claim_id']) == ('escalated', None, None)
     assert world.app.rows('SELECT kind FROM outbox') == [{'kind': 'escalation'}]
@@ -336,7 +336,7 @@ def test_unquoted_answer_after_other_outbound_goes_to_the_only_open_escalation(w
     assert world.app.get(req)['state'] == 'new'
 
 
-def test_unquoted_answer_with_several_open_escalations_alerts_and_waits_for_a_quote(world):
+def test_unquoted_answer_with_several_open_escalations_asks_once_and_waits_for_a_quote(world):
     first = escalate(world)
     second = world.request('second')
     world.send_result = subprocess.CompletedProcess([], 0, '{"data":{"MsgID":"second-id"}}', '')
@@ -345,7 +345,13 @@ def test_unquoted_answer_with_several_open_escalations_alerts_and_waits_for_a_qu
     world.wa('bot', chat_jid=OWNER, sender=None, from_me=1, text='Which items are sold out?')
     assert owner_says(world, 'stock', '3, 14')['answers'] == []
     assert not world.db.execute("SELECT 1 FROM messages WHERE msg_id='stock'").fetchone()
-    assert [a['key'] for a in world.alerts()] == ['ambiguous:stock']
+    # Not an alert that repeats: one line asking which card, sent once.
+    assert world.alerts() == []
+    assert world.sends[-1][5:] == [OWNER, '--message', f'Which card is that for? Send it again starting with the ID: T{first}, T{second}.']
+    asked = len(world.sends)
+    world.advance(3 * 60)
+    world.app.sync()
+    assert len(world.sends) == asked
     assert owner_says(world, 'quoted', 'send it', quoted_msg_id='sent-id')['answers'] == [first]
     assert world.app.get(second)['state'] == 'escalated'
 

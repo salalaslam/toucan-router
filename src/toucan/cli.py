@@ -15,7 +15,7 @@ from .storage import connect
 def parser():
     p = argparse.ArgumentParser(prog='toucan')
     commands = p.add_subparsers(dest='command', required=True)
-    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'rotate', 'init', 'doctor', 'upload', 'forward', 'bounce'):
+    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'rotate', 'init', 'doctor', 'upload', 'forward', 'bounce', 'digest', 'retriage'):
         sub = commands.add_parser(name)
         sub.add_argument('--json', action='store_true')
         if name in ('check-config', 'doctor'):
@@ -50,8 +50,20 @@ def parser():
         elif name in ('release', 'done', 'reply', 'react', 'close', 'escalate'):
             sub.add_argument('request', type=int)
             sub.add_argument('--claim', required=True)
-        if name in ('done', 'escalate'):
+        if name == 'done':
             sub.add_argument('--note', required=True)
+        if name == 'escalate':
+            from .cards import BAR, CATEGORIES
+            sub.description = BAR + ' Toucan turns this into a short card; the owner answers "T<request> <letter>".'
+            # Checked by cards.validate, not argparse, so a refusal explains the whole rule at once.
+            sub.add_argument('--category', default='', help='why only the owner can decide this: ' + ', '.join(CATEGORIES))
+            sub.add_argument('--want', default='', help='what the requester wants, one line under 120 characters')
+            sub.add_argument('--question', default='', help='the one decision you need, under 160 characters')
+            sub.add_argument('--option', action='append', default=[], help='a choice, under 80 characters; give 2 to 4')
+            sub.add_argument('--pick', default='', help='letter of the option you suggest (A, B, ...)')
+            sub.add_argument('--note', default='', help='full context, sent only when the owner replies "more"')
+        if name in ('digest', 'retriage'):
+            sub.add_argument('--dry-run', action='store_true')
         if name == 'close':
             sub.add_argument('--reason', required=True)
         if name == 'sync':
@@ -225,7 +237,9 @@ def dispatch(args, app):
         messages = app.inbox(args.thread)
         commands = (f'toucan claim REQ... --thread {args.thread}; '
                     'toucan reply REQ --claim ID (--final | --promise WHAT --due 2h | --keep-open) --text TEXT; '
-                    'toucan done REQ --claim ID --note TEXT; toucan close REQ --claim ID --reason TEXT')
+                    'toucan done REQ --claim ID --note TEXT; toucan close REQ --claim ID --reason TEXT; '
+                    f'only what {app.settings["owner_name"]} alone can decide: toucan escalate REQ --claim ID --category C --want W --question Q '
+                    '--option A --option B --pick A --note DETAIL (see toucan escalate --help)')
         if any(router.is_live(r) for r in app.cfg['routes']):
             commands += f'; not yours: toucan bounce REQ --thread {args.thread} [--claim ID] --reason TEXT'
         waiting = app.waiter_running(args.thread)
@@ -240,11 +254,16 @@ def dispatch(args, app):
         owner_jids = {owner} if owner else set()
         for key in owners:
             owner_jids.update(app.cfg['people'][key].get('whatsapp', []))
+        retriage = {int(r['key'].split(':', 1)[1]) for r in app.rows("SELECT key FROM meta WHERE key LIKE 'retriage:%'")}
         for m in messages:
             req = (f'answer to request {m["answers_request"]}' if m['answers_request'] else
                    f'request {m["request_id"]}, state {m["state"]}' if m['request_id'] else
                    f'request {m["other_request"]} belongs to thread {m["other_thread"]}; context only here' if m['other_request'] else
                    'context only')
+            if m['request_id'] in retriage and m['state'] in ('new', 'claimed', 'done'):
+                req += (f', was escalated to {app.settings["owner_name"]} before decision cards and is back for a re-check: '
+                        'settle it yourself, ask the requester, or close it if it is stale; escalate again only if it still '
+                        'needs a decision only the owner can make, with `toucan escalate` (see --help)')
             if m['request_id'] and m['part']:
                 req += (f', only the part of this message about {m["part_label"]} (shown first below); '
                         f'replies start with "{m["part_label"]}:" automatically')
@@ -295,7 +314,8 @@ def dispatch(args, app):
         return dict(request=args.request, action=c)
     if c in ('reply', 'send', 'escalate'):
         if c == 'escalate':
-            return app.deliver(args.request, args.claim, text=args.note, escalation=True, thread=args.thread)
+            return app.escalate(args.request, args.claim, args.category, args.want, args.question, args.option, args.pick,
+                                args.note, thread=args.thread)
         if args.caption and not args.file:
             raise ValidationError('--caption requires --file')
         if args.text is not None and not args.text.strip():
@@ -309,6 +329,13 @@ def dispatch(args, app):
             raise ValidationError('--due must be in the future')
         return app.deliver(args.request, args.claim, text=args.text, file=args.file, caption=args.caption,
                            keep_open=args.keep_open, thread=args.thread, promise=args.promise, due=due)
+    if c == 'digest':
+        return app.digest()
+    if c == 'retriage':
+        if app.dry:
+            return dict(requests=[r['id'] for r in app.rows("SELECT r.id FROM requests r WHERE r.state='escalated' "
+                                                            'AND NOT EXISTS (SELECT 1 FROM cards c WHERE c.request_id=r.id)')])
+        return app.retriage()
     if c == 'import-pending':
         return dict(created=app.import_pending(args.route, timestamp(args.since)))
     if c == 'status':

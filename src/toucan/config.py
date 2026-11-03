@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 DEFAULTS = dict(rewake_minutes=15, wake_gap_minutes=2, max_wakes=3, claimed_stale_hours=4,
                 done_unclosed_minutes=30, whatsapp_stale_minutes=120, rate_per_hour=20,
                 context_hours=24, ack_alert_minutes=5, fallback_minutes=5, rotate_tokens=200000,
-                rotate_stall_minutes=60, owner_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
+                rotate_stall_minutes=60, owner_whatsapp='', drafts_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
                 alert_url_file='', upload_command='toucan-upload-loom', transcribe='', followup_minutes=120,
                 router_general_thread='', router_commands=(), router_timeout_seconds=60, router_history=20,
                 router_budget_seconds=90, router_hold_minutes=5, router_ask_minutes=15, max_bounces=2)
@@ -20,6 +20,7 @@ ROUTER_MODES = ('off', 'shadow', 'live')
 ROUTER_BUDGET_MAX = 180  # seconds; keeps a sync well inside the timer unit's 5-minute timeout
 PHONE = re.compile(r'^\d+@s\.whatsapp\.net$')
 JID = re.compile(r'^\d+@(s\.whatsapp\.net|lid|g\.us)$')
+GROUP = re.compile(r'^\d+(-\d+)?@g\.us$')
 # Keys toucan reads (active_ts is added by load). Anything else is likely a typo that would do nothing.
 KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email'},
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens'},
@@ -32,7 +33,7 @@ KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id
 SOURCE_DEFAULTS = dict(whatsapp=dict(store='~/.local/state/wacli', account='wa', service_unit=''),
                        teams=dict(bot_db='~/.local/state/toucan-bot/bot.db', stale_minutes=5, service_unit=''),
                        email=dict(notmuch_config='', stale_minutes=60))
-TEXT_SETTINGS = {'owner_whatsapp', 'owner_teams_id', 'owner_name', 'timezone', 'alert_url', 'alert_url_file', 'upload_command', 'transcribe', 'ntfy',
+TEXT_SETTINGS = {'owner_whatsapp', 'drafts_whatsapp', 'owner_teams_id', 'owner_name', 'timezone', 'alert_url', 'alert_url_file', 'upload_command', 'transcribe', 'ntfy',
                  'router_general_thread'}
 LIST_SETTINGS = {'router_commands'}
 
@@ -267,6 +268,9 @@ def warnings(cfg, paths=None):
             result.append(f"{key}: t3_thread is stale; Toucan uses the hook's thread")
     if not PHONE.fullmatch(cfg['settings']['owner_whatsapp']):
         result.append('owner_whatsapp must be an explicit phone JID before drafts or escalations can be sent')
+    drafts = cfg['settings']['drafts_whatsapp']
+    if drafts and not (PHONE.fullmatch(drafts) or GROUP.fullmatch(drafts)):
+        result.append('drafts_whatsapp must be a phone or group JID; drafts go to owner_whatsapp until it is')
     if any(r['source'] == 'teams' for r in cfg['routes']) and not cfg['settings']['owner_teams_id']:
         result.append('Set settings.owner_teams_id to identify owner messages in Teams')
     if 'reader_state' in cfg['sources']['teams']:

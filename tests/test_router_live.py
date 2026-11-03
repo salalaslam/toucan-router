@@ -369,7 +369,7 @@ def test_an_escalated_part_comes_back_alone(world):
     world.app.sync()
     first, second = [r['id'] for r in world.app.rows('SELECT id FROM requests ORDER BY id')]
     world.app.deliver(second, world.app.claim([second], 'project-b'), text='Which environment?', escalation=True)
-    assert world.sends[-1][7].startswith('Escalation from thread project-b: Alice Example asked: rerun billing\n')
+    assert world.sends[-1][7].startswith(f'*T{second}* · project-b · Alice Example\nWants: rerun billing\nDecide: Which environment?')
     world.wa('sent-id', chat_jid=OWNER, sender=None, from_me=1, text='Escalation from thread project-b: ...')
     world.advance(3 * 60)
     world.wa('answer', chat_jid=OWNER, sender=OWNER, sender_name='Example Owner', text='staging')

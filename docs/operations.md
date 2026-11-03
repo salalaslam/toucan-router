@@ -30,7 +30,9 @@ toucan done 43 --claim CLAIM --note 'Finished; waiting on a decision.'
 toucan close 43 --claim CLAIM --reason 'No reply needed.'
 toucan release 43 --claim CLAIM                       # back to the inbox
 toucan forward 43 --to project-b --thread project-a --reason 'Billing, not the portal'
-toucan escalate 43 --claim CLAIM --note 'Needs a production deploy.'
+toucan escalate 43 --claim CLAIM --category deploy --want 'Ship the billing fix' \
+  --question 'Release PR 109 to production now?' --option 'Yes, release now' --option 'Wait for PR 110' \
+  --pick A --note 'Full context, sent only if the owner replies more.'
 toucan send --route team-chat --thread project-a --text 'The test results are ready.'
 toucan upload /tmp/proof.mp4 --title 'Fix walkthrough'
 toucan status
@@ -67,11 +69,43 @@ reaches the agent mid-turn, and the agent starts it again. It times out after 11
 
 ## Escalations
 
-`escalate` sends you an excerpt of the request and the thread's note on WhatsApp, and leaves the
-request open with no claim. Reply on WhatsApp, quoting the escalation, and the answer goes
-back to the thread as `OWNER ANSWER`. The request returns to `new` and the thread is woken. An
-unquoted reply answers the escalation sent just before it, or the only open one. If several
-are open, Toucan alerts and asks for a quoted reply.
+An escalation reaches you only as a decision card, and only for what you alone can decide:
+`deploy` (a production deploy, release or merge), `client` (a commitment to a client), `scope`
+(scope, an estimate or priorities between projects), `money`, `access` (access or credentials),
+or `asked` (the requester asked for you personally). `toucan escalate` refuses anything else,
+and anything without one question (under 160 characters), two to four options (under 80 each)
+and the thread's pick. Toucan writes the card itself:
+
+```text
+*T43* · project-a · Alice
+Wants: Ship the billing fix
+Decide: Release PR 109 to production now?
+A) Yes, release now  ← suggested
+B) Wait for PR 110
+Reply "T43 A", quote this, or "more"
+```
+
+The request stays open with no claim. Answer on WhatsApp in any of these ways:
+
+- `T43 B` (or `T43 B, but tell Alice first`) answers card T43 from anywhere in the chat. A bare
+  letter reaches the thread spelled out, as `B) Wait for PR 110`.
+- Quote the card. An unquoted reply answers the card sent just before it, or the only open one.
+  With several open, Toucan asks once, in one line, which card it is for.
+- `more`, quoting the card, or `more T43`, sends the thread's full note and the requester's
+  message. Quoting that detail message answers the card too.
+
+The answer goes back to the thread as `OWNER ANSWER`; the request returns to `new` and the
+thread is woken. If the thread escalates the same request again with the same question, the
+new note is added to the card without a message (`more` shows it) and the card waits for the
+daily list. A different question is a new card.
+
+`toucan digest` (run it once a day from a timer) sends one message listing every card still
+waiting on you, with its options, and how many requests threads settled without you the day
+before. It sends nothing when nothing is waiting. `--dry-run` prints it.
+
+`toucan retriage` hands every request escalated before cards existed back to its thread, which
+the inbox tells to settle it or escalate it again as a card. Those cards are held for the next
+daily list instead of being sent one by one.
 
 If you answer in the T3 thread instead, the thread runs `toucan resume REQ --thread KEY`. It
 finds what you typed in that thread after the escalation, claims the request and prints your
