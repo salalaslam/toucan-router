@@ -74,7 +74,11 @@ An escalation reaches you only as a decision card, and only for what you alone c
 (scope, an estimate or priorities between projects), `money`, `access` (access or credentials),
 or `asked` (the requester asked for you personally). `toucan escalate` refuses anything else,
 and anything without one question (under 160 characters), two to four options (under 80 each)
-and the thread's pick. Toucan writes the card itself:
+and the thread's pick. Routine waiting and dependency tracking belong to the handling thread.
+It records who or what is needed and waits without reminders, rather than asking whether to
+keep the request open. Tracking questions about blocked or pending work are refused even
+when labelled as scope or access decisions. A new decision about spending, access or a
+client commitment can still be escalated while work is blocked. Toucan writes the card itself:
 
 ```text
 *T43* · project-a · Alice

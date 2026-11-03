@@ -58,6 +58,9 @@ just send the result with `--final` when it is ready.
 
 Escalate anything involving production, money, credentials or commitments to clients.
 Don't promise work that waits on an escalation; say it's waiting on a decision.
+Routine waiting is yours to manage. Record the dependency and who must answer, keep the
+request open, and wait without reminders. Don't ask the owner whether to track, close or
+leave a blocked request waiting. Escalate only a new decision the owner alone can make.
 
 ## Rules
 

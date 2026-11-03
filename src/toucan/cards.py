@@ -28,7 +28,9 @@ LETTER = re.compile(r'^\s*\(?([A-D])(?:\)?\s*$|\)?\s*[:.,;)\-]\s*(.*)$)', re.I |
 DETAIL_MAX = 3500
 
 BAR = ('Escalate only what the owner alone can decide: ' + '; '.join(f'{k} ({v})' for k, v in CATEGORIES.items()) +
-       '. Settle anything else yourself or ask the requester.')
+       '. Settle anything else yourself or ask the requester. Routine waiting, dependency tracking and '
+       'whether to leave a blocked request open are not owner decisions. Record the dependency and '
+       'wait without reminders; ask only when a new decision requires the owner.')
 USAGE = ('toucan escalate REQ --claim ID --category CATEGORY --want "what they want, one line" '
          '--question "the one thing to decide" --option "first choice" --option "second choice" [--option ...] '
          '--pick A --note "full context, shown only if the owner replies more"')
@@ -49,6 +51,12 @@ def validate(category, want, question, options, pick):
         problems.append(f'--category must be one of {", ".join(CATEGORIES)}')
     want, question = one_line(want), one_line(question)
     options = [one_line(o) for o in options or []]
+    # A scope/access label must not turn administrative tracking into an owner decision.
+    # Match the question, not its context: a real funding/deploy question can mention a wait.
+    if (re.match(r'^(?:how|where)\b', question, re.I)
+            and re.search(r'\b(?:blocked|waiting|pending|dependency|dependencies)\b', question, re.I)
+            and re.search(r'\b(?:track|tracked|tracking|record|recorded|log|logged|mark|marked)\b', question, re.I)):
+        problems.append('routine waiting and dependency tracking belong to the thread; record the dependency and wait without reminders')
     if not want:
         problems.append('--want is required: what the requester wants, in one line')
     elif len(want) > LIMITS['want']:

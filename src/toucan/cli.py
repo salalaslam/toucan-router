@@ -239,7 +239,9 @@ def dispatch(args, app):
                     'toucan reply REQ --claim ID (--final | --promise WHAT --due 2h | --keep-open) --text TEXT; '
                     'toucan done REQ --claim ID --note TEXT; toucan close REQ --claim ID --reason TEXT; '
                     f'only what {app.settings["owner_name"]} alone can decide: toucan escalate REQ --claim ID --category C --want W --question Q '
-                    '--option A --option B --pick A --note DETAIL (see toucan escalate --help)')
+                    '--option A --option B --pick A --note DETAIL (see toucan escalate --help). '
+                    'Routine waiting is yours to track: record the dependency and wait without reminders. '
+                    'Do not ask the owner whether to keep a blocked request open')
         if any(router.is_live(r) for r in app.cfg['routes']):
             commands += f'; not yours: toucan bounce REQ --thread {args.thread} [--claim ID] --reason TEXT'
         waiting = app.waiter_running(args.thread)

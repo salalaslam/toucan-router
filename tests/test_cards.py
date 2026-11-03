@@ -35,6 +35,11 @@ def stored_answer(world, req):
     (dict(options=['a', 'b', 'c', 'd', 'e']), 'not 5'),
     (dict(pick='C'), '--pick must be the letter'),
     (dict(want=''), '--want is required'),
+    (dict(category='scope', question='How should this blocked assessment be tracked?',
+          options=['Leave waiting on the requester; no reminder', 'Close until the approved export arrives']),
+     'routine waiting'),
+    (dict(category='access', question='Where should we record this pending dependency?'), 'routine waiting'),
+    (dict(category='scope', question='How should we track a request waiting on documents?'), 'routine waiting'),
 ])
 def test_the_gate_refuses_anything_but_a_short_decision_and_sends_nothing(world, change, problem):
     world.seed()
