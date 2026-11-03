@@ -350,6 +350,14 @@ def test_unquoted_answer_with_several_open_escalations_alerts_and_waits_for_a_qu
     assert world.app.get(second)['state'] == 'escalated'
 
 
+def test_unquoted_forwards_and_bare_documents_are_not_answers(world):
+    req = escalate(world)
+    assert owner_says(world, 'fwd', 'Two notes alongside the five answers', is_forwarded=1)['answers'] == []
+    assert owner_says(world, 'pdf', '', media_type='document', filename='report.pdf')['answers'] == []
+    assert world.app.get(req)['state'] == 'escalated' and world.alerts() == []
+    assert owner_says(world, 'file', '', media_type='document', filename='spec.pdf', quoted_msg_id='sent-id')['answers'] == [req]
+
+
 def test_resume_needs_owner_to_have_written_in_the_owner_thread_since_the_escalation(world):
     req = escalate(world)
     world.t3('before', world.now - 3600, 'unrelated')

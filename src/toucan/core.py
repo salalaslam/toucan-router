@@ -400,7 +400,8 @@ class App:
 
         A message answers an escalation when it quotes it. An unquoted message answers the
         escalation sent just before it, or else the only escalation open when it was sent; with
-        several open it alerts instead. When that chat is also a route, only the first rule and the one
+        several open it alerts instead. Unquoted forwards and caption-less documents never answer.
+        When that chat is also a route, only the first rule and the one
         after it apply, and anything else becomes a request; otherwise it is never stored."""
         sent = self.rows("SELECT o.external_id,o.text AS sent_text,o.created_at AS sent_at,r.id,r.thread,r.route,r.state,r.closed_at "
                          "FROM outbox o JOIN requests r ON r.id=o.request_id WHERE o.kind='escalation' AND o.state='sent'")
@@ -424,6 +425,8 @@ class App:
                 continue
             if row['quoted_msg_id']:
                 target = by_id.get(row['quoted_msg_id'])
+            elif row.get('is_forwarded') or (row['media_type'] == 'document' and not (row['text'] or row.get('media_caption'))):
+                continue  # forwarded material and bare files are something to look at, not an answer
             elif routed:
                 target = by_id.get(last_out)
             else:

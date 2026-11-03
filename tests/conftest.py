@@ -40,7 +40,8 @@ class World:
              sender_jid TEXT, sender_name TEXT, ts INTEGER, from_me INTEGER,
              text TEXT, display_text TEXT, quoted_msg_id TEXT, reaction_to_id TEXT, reaction_emoji TEXT,
              media_type TEXT, media_caption TEXT, filename TEXT, local_path TEXT,
-             revoked INTEGER DEFAULT 0, deleted_for_me INTEGER DEFAULT 0, edited INTEGER DEFAULT 0);
+             revoked INTEGER DEFAULT 0, deleted_for_me INTEGER DEFAULT 0, edited INTEGER DEFAULT 0,
+             is_forwarded INTEGER DEFAULT 0);
             ''')
         with sqlite3.connect(self.paths.wa / 'session.db') as db:
             db.execute('CREATE TABLE whatsmeow_lid_map(lid TEXT PRIMARY KEY,pn TEXT NOT NULL UNIQUE)')
