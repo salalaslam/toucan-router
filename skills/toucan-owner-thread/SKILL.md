@@ -84,6 +84,10 @@ leave a blocked request waiting. Escalate only a new decision the owner alone ca
 - A reply on a route with `post_as_bot` is posted in the Teams chat as the bot. The bot posts
   text and still images: `--file shot.png --caption "..."` shows the image inline, resized to
   fit 1024x1024. Animated GIFs, videos and other files are refused; send those another way.
+- To tag someone, write `@[KEY]` with their person key from the config (`@[owner]` is the
+  owner). On a `post_as_bot` route it becomes a real Teams mention that notifies them; a plain
+  "@Name" does not. Other routes get their name. Tag only people in that chat; the reply is
+  refused if they are not in it.
 - Never print or paste hook URLs, tokens or the contents of `~/.config/toucan/hooks/`.
 - If a reply is refused because of an `uncertain` delivery, stop and tell the owner. Don't
   retry until someone has checked whether the message arrived.

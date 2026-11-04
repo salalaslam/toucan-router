@@ -66,18 +66,22 @@ class UncertainSend(Exception):
     """The connector may have accepted the message; never retry automatically."""
 
 
-def _activity(text: str, image: outbound.Prepared | None):
-    if image is None:
+def _activity(text: str, image: outbound.Prepared | None, mentions: list[outbound.Mention] = ()):
+    if image is None and not mentions:
         return text
-    from microsoft_teams.api import Attachment, MessageActivityInput
+    from microsoft_teams.api import Account, Attachment, MentionEntity, MessageActivityInput
 
     activity = MessageActivityInput(text=text)
-    return activity.add_attachments(Attachment(content_type=image.content_type, content_url=image.data_uri(), name=image.name))
+    if image is not None:
+        activity.add_attachments(Attachment(content_type=image.content_type, content_url=image.data_uri(), name=image.name))
+    for m in mentions:
+        activity.add_entity(MentionEntity(mentioned=Account(id=m.member_id, aad_object_id=m.aad_id, name=m.name), text=m.text))
+    return activity
 
 
 async def _send(creds: config.Credentials, conversation_id: str, service_url: str, text: str,
-                image: outbound.Prepared | None = None) -> str | None:
-    activity = _activity(text, image)
+                image: outbound.Prepared | None = None, mentions: list[outbound.Mention] = ()) -> str | None:
+    activity = _activity(text, image, mentions)
 
     async def call(app):
         try:
@@ -209,18 +213,25 @@ def cmd_send(args) -> int:
         except outbound.ImageError as e:
             print(f"toucan-bot: {e}", file=sys.stderr)
             return 2
+    # With an image the text is an optional caption; stdin is read only for text messages.
+    # A dry run without --text checks the chat and image only.
+    text = args.text if args.text is not None else "" if image or args.dry_run else sys.stdin.read()
+    try:
+        text, mentions = outbound.tags(text, store.members(con, conv["id"]))
+    except outbound.TagError as e:
+        print(f"toucan-bot: {e}", file=sys.stderr)
+        return 2
     if args.dry_run:
         chats = names.load_chats()
         print(f"would send to {names.label(chats[conv['id']]) if conv['id'] in chats else conv['name']}: {conv['id']}"
-              + (f" with {image.name} ({image.width}x{image.height}, {len(image.data) // 1024} KB)" if image else ""))
+              + (f" with {image.name} ({image.width}x{image.height}, {len(image.data) // 1024} KB)" if image else "")
+              + (f", tagging {', '.join(m.name for m in mentions)}" if mentions else ""))
         return 0
-    # With an image the text is an optional caption; stdin is read only for text messages.
-    text = args.text if args.text is not None else "" if image else sys.stdin.read()
     if not text.strip() and image is None:
         print("toucan-bot: empty message", file=sys.stderr)
         return 2
     try:
-        activity_id = asyncio.run(_send(creds, conv["id"], conv["service_url"], text, image))
+        activity_id = asyncio.run(_send(creds, conv["id"], conv["service_url"], text, image, mentions))
     except UncertainSend as e:
         print(f"toucan-bot: {e}", file=sys.stderr)
         return 4
@@ -348,7 +359,8 @@ def main(argv=None) -> int:
     to = s.add_mutually_exclusive_group(required=True)
     to.add_argument("--to", help="person (their 1:1 with the signed-in user) or chat name, e.g. 'Alice' or 'Project A'")
     to.add_argument("--conversation", help="conversation ID from `toucan-bot conversations`")
-    s.add_argument("--text", help="message text, or the caption with --image (default: read stdin)")
+    s.add_argument("--text", help="message text, or the caption with --image (default: read stdin); "
+                                  "@[ENTRA_ID] tags a member of the chat")
     s.add_argument("--image", help="still PNG, JPEG, GIF or WebP to show inline; resized to fit 1024x1024")
     s.add_argument("--dry-run", action="store_true", help="print which chat it would go to, and send nothing")
     s.set_defaults(fn=cmd_send)

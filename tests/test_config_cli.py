@@ -73,6 +73,24 @@ def test_send_requires_thread_and_nonempty_text(world, send_cli, capsys):
     assert world.sends == [] and world.app.rows('SELECT * FROM outbox') == []
 
 
+@pytest.mark.parametrize('route,text,sent', [
+    ('group', 'Ready, @[alice]', 'Ready, @[00000000-0000-0000-0000-000000000001]'),
+    ('alice-whatsapp', 'Ready, @[alice]', 'Ready, Alice Example'),
+    ('group', 'Ready, @[nobody]', None),
+])
+def test_send_tags_become_teams_mentions_on_the_bot_and_names_elsewhere(world, send_cli, capsys, route, text, sent):
+    world.config_path.write_text(world.config_text.replace('\nsource = "teams"\n', '\nsource = "teams"\npost_as_bot = true\n'))
+    chat = ['--chat', PHONE] if route == 'alice-whatsapp' else []
+    code = send_cli(['send', '--route', route, '--thread', 'project-a', '--text', text, *chat])
+    if sent is None:
+        assert code == 2 and 'unknown person' in capsys.readouterr().err
+        assert world.sends == [] and world.app.rows('SELECT * FROM outbox') == []
+    else:
+        assert code == 0
+        [argv] = world.sends
+        assert argv[argv.index('--text' if argv[0] == 'toucan-bot' else '--message') + 1] == sent
+
+
 @pytest.mark.parametrize('bot,name,content', [
     (False, 'proof.txt', b'Evidence'),
     (True, 'proof.txt', b'Evidence'),

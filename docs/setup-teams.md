@@ -292,6 +292,14 @@ prints the prepared size. Through the router, `toucan reply --file` and `toucan 
 on a `post_as_bot` route pass a still image to the bot and refuse other files; send those
 another way.
 
+Tags: `@[ENTRA_ID]` in `toucan-bot send --text` becomes a Teams mention, `<at>Name</at>` plus a
+mention entity, using the display name and Teams user ID from that chat's stored roster. A tag
+for someone not in the roster, or one that is not an Entra object ID, refuses the whole
+message. In `toucan reply` and `toucan send`, `@[KEY]` names a person key from the config
+(`@[owner]` for the owner). The router passes their `teams_id` to the bot on `post_as_bot`
+routes and writes their name on other routes. Each chat's roster refresh is limited to 60
+seconds, so an unanswered Connector request cannot stall later refreshes.
+
 `toucan-bot send` exits with code 4 when Teams may have accepted the message but the reply
 never arrived. Check the chat before sending again. The router records such sends as
 `uncertain` and won't retry them on its own. `--json` works before or after the subcommand.

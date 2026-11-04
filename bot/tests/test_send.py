@@ -199,3 +199,34 @@ def test_large_photos_are_reencoded_under_the_size_cap(tmp_path):
     image = outbound.prepare(path)
     assert image.content_type == 'image/jpeg' and image.name == 'photo.jpg'
     assert len(image.data) <= outbound.MAX_BYTES and max(image.width, image.height) <= outbound.MAX_SIDE
+
+
+ALICE_AAD = '00000000-0000-0000-0000-00000000000a'
+
+
+def add_alice():
+    from types import SimpleNamespace
+    from toucan_bot import store
+    with store.connect(config.db_path()) as con:
+        store.remember_member(con, 'chat', SimpleNamespace(id='29:alice', aad_object_id=ALICE_AAD.upper(), name='Alice & Co'))
+
+
+def test_cli_send_turns_entra_tags_into_teams_mentions(send_environment, monkeypatch):
+    add_alice()
+    sent = capture_sends(monkeypatch)
+    assert cli.main(['send', '--conversation', 'chat', '--text', f'@[{ALICE_AAD}] the build is ready, @[{ALICE_AAD}]']) == 0
+    body = sent[0].model_dump(by_alias=True, exclude_none=True)
+    assert body['text'] == '<at>Alice &amp; Co</at> the build is ready, <at>Alice &amp; Co</at>'
+    assert [(e['type'], e['text'], e['mentioned']['id']) for e in body['entities']] == [
+        ('mention', '<at>Alice &amp; Co</at>', '29:alice')]
+
+
+@pytest.mark.parametrize('tag,error', [
+    ('00000000-0000-0000-0000-00000000000b', "not in this chat's member list"),
+    ('alice', 'not an Entra object ID'),
+])
+def test_cli_send_refuses_tags_it_cannot_resolve_before_sending(send_environment, monkeypatch, capsys, tag, error):
+    add_alice()
+    sent = capture_sends(monkeypatch)
+    assert cli.main(['send', '--conversation', 'chat', '--text', f'Hi @[{tag}]']) == 2
+    assert sent == [] and error in capsys.readouterr().err

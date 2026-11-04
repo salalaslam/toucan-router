@@ -447,6 +447,10 @@ def record_sent(con, *, conversation_id, activity_id, text) -> None:
     con.commit()
 
 
+def members(con, conversation_id: str):
+    return con.execute("SELECT id, aad_id, name FROM members WHERE conversation_id = ?", (conversation_id,)).fetchall()
+
+
 def get_conversation(con, conversation_id: str):
     return con.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
 

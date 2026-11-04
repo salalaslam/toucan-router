@@ -1,5 +1,6 @@
 """Request lifecycle and delivery. Every network or process effect is injectable."""
 import json
+import re
 import shlex
 import sqlite3
 import uuid
@@ -23,6 +24,10 @@ VOICE_BUDGET = 60    # seconds; no new note starts after this, so a sync stays w
 
 # Download state the bot or wacli adds to an attachment; it is not an edit of the message.
 DOWNLOAD_FIELDS = ('local_path', 'download_status', 'http_status', 'download_error', 'retry_at')
+
+
+# `@[person]` in a reply; the Teams bot posts a mention, other transports get the name.
+TAG = re.compile(r'@\[([^\[\]]*)\]')
 
 
 def still_image(path):
@@ -1165,9 +1170,26 @@ class App:
                             replaces=live and last['answered_at'] is None, seq=seq)
         return body, card_row, 'sent'
 
+    def tags(self, body, source):
+        """Swap `@[person]` for an Entra ID tag the bot turns into a Teams mention, or a plain name elsewhere."""
+        def swap(match):
+            key = match.group(1).strip()
+            person = self.cfg['people'].get(key)
+            if person is None and key == 'owner':
+                person = dict(name=self.settings['owner_name'], teams_id=self.settings['owner_teams_id'])
+            if person is None:
+                raise ValidationError(f'unknown person in tag @[{key}]; use a person key from the config, or owner')
+            if source != 'teams-bot':
+                return person['name']
+            if not person.get('teams_id'):
+                raise ValidationError(f'@[{key}] has no teams_id, so Teams cannot tag them')
+            return f'@[{person["teams_id"]}]'
+        return TAG.sub(swap, body) if body else body
+
     def _queue_delivery(self, req, thread, kind, source, recipient, body, file, **detail):
         if file and not Path(file).is_file():
             raise ValidationError('attachment file does not exist')
+        body = self.tags(body, source)
         if source == 'teams-bot' and file and not still_image(file):
             raise ValidationError('the Toucan bot posts text and still images (PNG, JPEG, GIF, WebP) only; send other files another way')
         if not recipient or (kind != 'send' and not PHONE.fullmatch(recipient) and not (kind == 'draft' and GROUP.fullmatch(recipient))):

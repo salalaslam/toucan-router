@@ -1,6 +1,9 @@
-"""Prepare a local image for an inline Teams message from the bot.
+"""Prepare what a bot message carries beyond plain text: tags and an inline image.
 
-Teams shows a base64 data URI attachment inline in personal and group chats. It accepts
+Tags: `@[ENTRA_ID]` in the text becomes `<at>Display Name</at>` plus a mention entity, for
+people in the chat's stored roster only. Plain "@Name" text never notifies anyone.
+
+Images: Teams shows a base64 data URI attachment inline in personal and group chats. It accepts
 static PNG, JPEG and GIF up to 1024x1024 and does not play animations, so the image is
 downscaled, re-encoded and size-capped here, before anything is sent.
 """
@@ -8,7 +11,9 @@ downscaled, re-encoded and size-capped here, before anything is sent.
 from __future__ import annotations
 
 import base64
+import html
 import io
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +24,47 @@ MAX_SIDE = 1024
 MAX_BYTES = 700_000
 MAX_INPUT_BYTES = 30_000_000
 MAX_INPUT_PIXELS = 50_000_000
+
+
+TAG = re.compile(r'@\[([^\[\]]*)\]')
+GUID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+
+
+class TagError(ValueError):
+    """A tag cannot be turned into a Teams mention in this chat."""
+
+
+@dataclass(frozen=True)
+class Mention:
+    member_id: str
+    aad_id: str
+    name: str
+
+    @property
+    def text(self) -> str:
+        return f"<at>{html.escape(self.name, quote=False)}</at>"
+
+
+def tags(text: str, members) -> tuple[str, list[Mention]]:
+    """Replace each `@[ENTRA_ID]` with a mention of that chat member.
+
+    `members` holds roster rows with `id` (Teams user ID), `aad_id` and `name`. Any tag that
+    is not a member's Entra ID refuses the whole message, so nothing goes out half-tagged.
+    """
+    roster = {(m['aad_id'] or '').lower(): m for m in members if m['aad_id']}
+    found: dict[str, Mention] = {}
+
+    def swap(match):
+        aad = match.group(1).strip().lower()
+        if not GUID.fullmatch(aad):
+            raise TagError(f"tag @[{match.group(1)}] is not an Entra object ID")
+        member = roster.get(aad)
+        if member is None or not member['name']:
+            raise TagError(f"{aad} is not in this chat's member list; it may have joined after the last roster refresh")
+        mention = found.setdefault(aad, Mention(member['id'], aad, member['name']))
+        return mention.text
+
+    return TAG.sub(swap, text), list(found.values())
 
 
 class ImageError(ValueError):
