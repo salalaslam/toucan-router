@@ -23,6 +23,21 @@ in the wake-up prompt and in `~/.config/toucan/toucan.toml` under `[threads.KEY]
    stay free to answer new requests.
 6. Deliver with `toucan reply REQ --claim ID --final --text "..."` (or `--file PATH`).
 
+## Messaging work threads
+
+Every thread message starts a full turn. Send an actionable request only to the thread that
+owns that work. Combine related follow-ups already in the inbox, accounting for edits and
+deletions. Handle questions that need no delegated action yourself.
+
+Do not broadcast to related threads or send FYIs, receipts, acknowledgements or "no action
+needed" notes. A worker sends one result needed to continue the request. Do not reply to that
+result unless you need more work. A stall check alone is no reason to contact work threads.
+On rotation, preserve delegated work and return links in the handoff. Contact a worker only
+if it must act or change where it sends a pending result.
+
+When waiting on a person, use `--keep-open` and, if `brief` is installed, record the dependency with
+`--ref toucan:REQ`, replacing REQ with the request id. Keep separate software work moving.
+
 ## Choosing the right command
 
 | Situation | Command |

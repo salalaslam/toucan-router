@@ -1191,7 +1191,8 @@ class App:
                     self.db.execute("UPDATE requests SET state='done',done_at=? WHERE id=?", (self.fx.now(), req))
                 elif not keep_open and not promise:
                     self.db.execute("UPDATE requests SET state='closed',closed_at=?,close_reason='replied' WHERE id=?", (self.fx.now(), req))
-            self.record('delivery_uncertain' if uncertain else 'delivery_failed' if result.returncode else 'delivered', thread, req, outbox=out, delivery_kind=kind)
+            self.record('delivery_uncertain' if uncertain else 'delivery_failed' if result.returncode else 'delivered', thread, req, outbox=out, delivery_kind=kind,
+                        keep_open=keep_open, promise=promise)
         if result.returncode:
             raise RuntimeError('delivery uncertain; inspect outbox before sending again' if uncertain
                                else f'{argv[0]} failed; inspect outbox error')

@@ -1,5 +1,6 @@
 import concurrent.futures
 import json
+import json
 import subprocess
 import threading
 
@@ -68,6 +69,8 @@ def test_whatsapp_text_explicit_frozen_jid_and_keep_open(world):
     world.app.deliver(req, claim, text='Resolved', keep_open=True)
     assert world.sends == [['wacli', '--json', 'send', 'text', '--to', PHONE, '--message', 'Resolved']]
     assert world.app.get(req)['state'] == 'claimed'
+    delivered = world.app.rows("SELECT detail_json FROM events WHERE kind='delivered' ORDER BY id DESC")[0]
+    assert json.loads(delivered['detail_json'])['keep_open'] is True
     result = world.app.deliver(req, claim, text='Final answer')
     assert result['external_id'] == 'sent-id'
     assert world.app.get(req)['state'] == 'closed'
