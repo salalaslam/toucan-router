@@ -73,17 +73,26 @@ def test_send_requires_thread_and_nonempty_text(world, send_cli, capsys):
     assert world.sends == [] and world.app.rows('SELECT * FROM outbox') == []
 
 
-@pytest.mark.parametrize('bot', [False, True])
-def test_send_files_follow_transport_capabilities(world, send_cli, capsys, bot):
+@pytest.mark.parametrize('bot,name,content', [
+    (False, 'proof.txt', b'Evidence'),
+    (True, 'proof.txt', b'Evidence'),
+    (True, 'proof.png', b'\x89PNG\r\n\x1a\n' + bytes(8)),
+])
+def test_send_files_follow_transport_capabilities(world, send_cli, capsys, bot, name, content):
     world.config_path.write_text(world.config_text.replace('\nsource = "teams"\n', f'\nsource = "teams"\npost_as_bot = {str(bot).lower()}\n'))
-    file = world.root / 'proof.txt'
-    file.write_text('Evidence')
+    file = world.root / name
+    file.write_bytes(content)
     args = ['send', '--route', 'group' if bot else 'alice-whatsapp', '--thread', 'project-a',
             '--file', str(file), '--caption', 'Evidence']
-    if bot:
+    if bot and name.endswith('.txt'):
         assert send_cli(args) == 2
-        assert 'text only' in capsys.readouterr().err
+        assert 'still images' in capsys.readouterr().err
         assert world.sends == [] and world.app.rows('SELECT * FROM outbox') == []
+    elif bot:
+        assert send_cli(args) == 0
+        [argv] = world.sends
+        assert argv[:3] == ['toucan-bot', '--json', 'send'] and argv[-2:] == ['--image', str(file)]
+        assert argv[argv.index('--text') + 1].endswith('Evidence')
     else:
         assert send_cli([*args, '--chat', PHONE]) == 0
         assert world.sends == [['wacli', '--json', 'send', 'file', '--to', PHONE,

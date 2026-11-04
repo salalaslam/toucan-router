@@ -18,7 +18,7 @@ from email.utils import parsedate_to_datetime
 
 import httpx
 
-from . import config, names, store
+from . import config, names, outbound, store
 
 
 def _print(rows, as_json: bool, fmt) -> None:
@@ -66,10 +66,22 @@ class UncertainSend(Exception):
     """The connector may have accepted the message; never retry automatically."""
 
 
-async def _send(creds: config.Credentials, conversation_id: str, service_url: str, text: str) -> str | None:
+def _activity(text: str, image: outbound.Prepared | None):
+    if image is None:
+        return text
+    from microsoft_teams.api import Attachment, MessageActivityInput
+
+    activity = MessageActivityInput(text=text)
+    return activity.add_attachments(Attachment(content_type=image.content_type, content_url=image.data_uri(), name=image.name))
+
+
+async def _send(creds: config.Credentials, conversation_id: str, service_url: str, text: str,
+                image: outbound.Prepared | None = None) -> str | None:
+    activity = _activity(text, image)
+
     async def call(app):
         try:
-            sent = await app.send(conversation_id, text, service_url=service_url)
+            sent = await app.send(conversation_id, activity, service_url=service_url)
         except Exception as error:
             # Token acquisition happens inside app.send too. Its failures precede
             # the connector POST and cannot have delivered the chat message.
@@ -190,16 +202,25 @@ def cmd_send(args) -> int:
     if conv is None:
         print("toucan-bot: unknown conversation; the bot must be added to it or messaged first", file=sys.stderr)
         return 2
+    image = None
+    if args.image:
+        try:
+            image = outbound.prepare(args.image)
+        except outbound.ImageError as e:
+            print(f"toucan-bot: {e}", file=sys.stderr)
+            return 2
     if args.dry_run:
         chats = names.load_chats()
-        print(f"would send to {names.label(chats[conv['id']]) if conv['id'] in chats else conv['name']}: {conv['id']}")
+        print(f"would send to {names.label(chats[conv['id']]) if conv['id'] in chats else conv['name']}: {conv['id']}"
+              + (f" with {image.name} ({image.width}x{image.height}, {len(image.data) // 1024} KB)" if image else ""))
         return 0
-    text = args.text if args.text is not None else sys.stdin.read()
-    if not text.strip():
+    # With an image the text is an optional caption; stdin is read only for text messages.
+    text = args.text if args.text is not None else "" if image else sys.stdin.read()
+    if not text.strip() and image is None:
         print("toucan-bot: empty message", file=sys.stderr)
         return 2
     try:
-        activity_id = asyncio.run(_send(creds, conv["id"], conv["service_url"], text))
+        activity_id = asyncio.run(_send(creds, conv["id"], conv["service_url"], text, image))
     except UncertainSend as e:
         print(f"toucan-bot: {e}", file=sys.stderr)
         return 4
@@ -207,7 +228,8 @@ def cmd_send(args) -> int:
         print(f"toucan-bot: send failed: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
     try:
-        store.record_sent(con, conversation_id=conv["id"], activity_id=activity_id, text=text)
+        recorded = "\n".join(filter(None, [text, f"[image: {image.name}]" if image else ""]))
+        store.record_sent(con, conversation_id=conv["id"], activity_id=activity_id, text=recorded)
         chats = names.load_chats()
         to = names.label(chats[conv["id"]]) if conv["id"] in chats else conv["name"] or conv["id"]
         print(json.dumps({"conversation_id": conv["id"], "to": to, "activity_id": activity_id}) if args.json
@@ -326,7 +348,8 @@ def main(argv=None) -> int:
     to = s.add_mutually_exclusive_group(required=True)
     to.add_argument("--to", help="person (their 1:1 with the signed-in user) or chat name, e.g. 'Alice' or 'Project A'")
     to.add_argument("--conversation", help="conversation ID from `toucan-bot conversations`")
-    s.add_argument("--text", help="message text (default: read stdin)")
+    s.add_argument("--text", help="message text, or the caption with --image (default: read stdin)")
+    s.add_argument("--image", help="still PNG, JPEG, GIF or WebP to show inline; resized to fit 1024x1024")
     s.add_argument("--dry-run", action="store_true", help="print which chat it would go to, and send nothing")
     s.set_defaults(fn=cmd_send)
     d = sub.add_parser("delete", help="delete a message Toucan posted")

@@ -136,3 +136,66 @@ def test_accepted_send_with_failed_local_record_is_uncertain(send_environment, m
     monkeypatch.setattr(store, 'record_sent', cannot_record)
     assert cli.main(['send', '--conversation', 'chat', '--text', 'hello']) == 4
     assert calls == [201]
+
+
+def capture_sends(monkeypatch):
+    sent = []
+
+    class App:
+        def __init__(self, **kwargs):
+            pass
+
+        async def initialize(self):
+            pass
+
+        async def send(self, conversation_id, activity, *, service_url):
+            sent.append(activity)
+            return type('Sent', (), {'id': 'activity-1'})()
+
+    monkeypatch.setattr(microsoft_teams.apps, 'App', App)
+    return sent
+
+
+def test_cli_send_posts_a_resized_inline_image_with_caption(send_environment, monkeypatch, tmp_path):
+    import base64, io
+    from PIL import Image
+    from toucan_bot import store
+    path = tmp_path / 'screenshot.png'
+    Image.new('RGB', (2400, 1200), 'navy').save(path)
+    sent = capture_sends(monkeypatch)
+    assert cli.main(['send', '--conversation', 'chat', '--image', str(path), '--text', 'The new page']) == 0
+    body = sent[0].model_dump(by_alias=True, exclude_none=True)
+    assert body['text'] == 'The new page'
+    [attachment] = body['attachments']
+    assert attachment['contentType'] == 'image/png'
+    header, data = attachment['contentUrl'].split(',', 1)
+    assert header == 'data:image/png;base64'
+    assert Image.open(io.BytesIO(base64.b64decode(data))).size == (1024, 512)
+    with store.connect(config.db_path()) as con:
+        assert con.execute('SELECT text FROM sent').fetchone()[0] == 'The new page\n[image: screenshot.png]'
+
+
+@pytest.mark.parametrize('kind', ['animated', 'not-an-image', 'missing'])
+def test_cli_send_refuses_images_teams_cannot_show_before_sending(send_environment, monkeypatch, tmp_path, kind, capsys):
+    from PIL import Image
+    path = tmp_path / 'file.gif'
+    if kind == 'animated':
+        frames = [Image.new('RGB', (20, 20), c) for c in ('red', 'blue')]
+        frames[0].save(path, save_all=True, append_images=frames[1:])
+    elif kind == 'not-an-image':
+        path.write_text('plain text')
+    sent = capture_sends(monkeypatch)
+    assert cli.main(['send', '--conversation', 'chat', '--image', str(path)]) == 2
+    assert sent == []
+    assert {'animated': 'animated', 'not-an-image': 'not a readable image', 'missing': 'does not exist'}[kind] in capsys.readouterr().err
+
+
+def test_large_photos_are_reencoded_under_the_size_cap(tmp_path):
+    import os
+    from PIL import Image
+    from toucan_bot import outbound
+    path = tmp_path / 'photo.png'
+    Image.frombytes('RGB', (2000, 1500), os.urandom(2000 * 1500 * 3)).save(path)
+    image = outbound.prepare(path)
+    assert image.content_type == 'image/jpeg' and image.name == 'photo.jpg'
+    assert len(image.data) <= outbound.MAX_BYTES and max(image.width, image.height) <= outbound.MAX_SIDE

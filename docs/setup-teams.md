@@ -284,7 +284,13 @@ A failed refresh leaves person aliases unavailable. Other chats still refresh be
 supervisor receives the aggregate failure and schedules a retry with backoff.
 Set `owner_teams_id` in the bot config or `settings.owner_teams_id` in the router config.
 Matching ignores case; exact matches take precedence among group aliases only.
-The bot posts text only; send files another way.
+The bot posts text and still images. `toucan-bot send --image PATH [--text CAPTION]` takes a
+PNG, JPEG, GIF or WebP, scales it to fit 1024x1024, re-encodes it under about 700 KB (JPEG
+when a PNG would be larger) and posts it inline as a base64 attachment, which needs no
+manifest change. Animated images are refused because Teams does not play them. `--dry-run`
+prints the prepared size. Through the router, `toucan reply --file` and `toucan send --file`
+on a `post_as_bot` route pass a still image to the bot and refuse other files; send those
+another way.
 
 `toucan-bot send` exits with code 4 when Teams may have accepted the message but the reply
 never arrived. Check the chat before sending again. The router records such sends as

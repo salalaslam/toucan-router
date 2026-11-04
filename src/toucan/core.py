@@ -25,6 +25,14 @@ VOICE_BUDGET = 60    # seconds; no new note starts after this, so a sync stays w
 DOWNLOAD_FIELDS = ('local_path', 'download_status', 'http_status', 'download_error', 'retry_at')
 
 
+def still_image(path):
+    """A PNG, JPEG, GIF or WebP by its magic bytes. The bot rejects animations and unreadable images."""
+    with open(path, 'rb') as f:
+        head = f.read(12)
+    return (head.startswith((b'\x89PNG\r\n\x1a\n', b'\xff\xd8\xff', b'GIF87a', b'GIF89a')) or
+            head[:4] == b'RIFF' and head[8:12] == b'WEBP')
+
+
 def attachment_content(value):
     return [{k: v for k, v in a.items() if k not in DOWNLOAD_FIELDS} for a in json.loads(value or '[]')]
 
@@ -1160,8 +1168,8 @@ class App:
     def _queue_delivery(self, req, thread, kind, source, recipient, body, file, **detail):
         if file and not Path(file).is_file():
             raise ValidationError('attachment file does not exist')
-        if source == 'teams-bot' and file:
-            raise ValidationError('the Toucan bot posts text only; send the file another way')
+        if source == 'teams-bot' and file and not still_image(file):
+            raise ValidationError('the Toucan bot posts text and still images (PNG, JPEG, GIF, WebP) only; send other files another way')
         if not recipient or (kind != 'send' and not PHONE.fullmatch(recipient) and not (kind == 'draft' and GROUP.fullmatch(recipient))):
             raise ValidationError('a valid owner_whatsapp phone JID is required')
         count = self.db.execute("SELECT count(*) FROM outbox WHERE to_chat=? AND state IN ('pending','sent','sending','uncertain') AND created_at>=?",
@@ -1184,7 +1192,8 @@ class App:
             row = self.db.execute('SELECT * FROM outbox WHERE id=?', (out,)).fetchone()
         recipient, body, file, kind = (row[k] for k in ('to_chat', 'text', 'file', 'kind'))
         if row['source'] == 'teams-bot':
-            argv = ['toucan-bot', '--json', 'send', '--conversation', recipient, '--text', body]
+            argv = ['toucan-bot', '--json', 'send', '--conversation', recipient, '--text', body or '']
+            argv += ['--image', str(file)] if file else []
         else:
             argv = ['wacli', '--json', 'send', 'file' if file else 'text', '--to', recipient]
             argv += ['--file', str(file)] + (['--caption', body] if body else []) if file else ['--message', body]

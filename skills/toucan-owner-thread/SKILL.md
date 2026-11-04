@@ -81,8 +81,9 @@ leave a blocked request waiting. Escalate only a new decision the owner alone ca
 
 - Send messages only through `toucan reply` and `toucan send`. Never call `wacli send` or
   `toucan-bot send` yourself for a request.
-- A reply on a route with `post_as_bot` is posted in the Teams chat as the bot, and the bot
-  posts text only. Send files another way.
+- A reply on a route with `post_as_bot` is posted in the Teams chat as the bot. The bot posts
+  text and still images: `--file shot.png --caption "..."` shows the image inline, resized to
+  fit 1024x1024. Animated GIFs, videos and other files are refused; send those another way.
 - Never print or paste hook URLs, tokens or the contents of `~/.config/toucan/hooks/`.
 - If a reply is refused because of an `uncertain` delivery, stop and tell the owner. Don't
   retry until someone has checked whether the message arrived.
