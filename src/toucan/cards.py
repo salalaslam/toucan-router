@@ -3,7 +3,8 @@
 An owner thread can't send the owner free text. It names a category from CATEGORIES, one
 question and two to four options with its pick, and Toucan renders the card. The thread's
 longer note is kept and sent only when the owner replies "more". Cards are numbered by request,
-so "T435 B" answers request 435 with option B."""
+so "T435 B" answers request 435 with option B. A later card on the same request gets its own
+number, "T435-2", so an answer meant for the first card can't land on the second."""
 import json
 import re
 
@@ -21,8 +22,8 @@ CATEGORIES = {
 ROUTING = 'routing'  # Toucan's own: no thread would take the request
 LETTERS = 'ABCD'
 LIMITS = dict(want=120, question=160, option=80)
-CARD_ID = re.compile(r'^\s*\*?T(\d+)\*?(?=$|[\s:.,;)\-])[\s:.,;)\-]*(.*)$', re.I | re.S)
-MORE = re.compile(r'^\s*more(?:\s+\*?T?(\d+)\*?)?\s*[.!?]?\s*$', re.I)
+CARD_ID = re.compile(r'^\s*\*?T(\d+)(?:-(\d+))?\*?(?=$|[\s:.,;)\-])[\s:.,;)\-]*(.*)$', re.I | re.S)
+MORE = re.compile(r'^\s*more(?:\s+\*?T?(\d+)(?:-\d+)?\*?)?\s*[.!?]?\s*$', re.I)
 # A letter alone, or followed by punctuation: "B", "b.", "B) but tomorrow", "B, and tell her". "a bit later" is a sentence.
 LETTER = re.compile(r'^\s*\(?([A-D])(?:\)?\s*$|\)?\s*[:.,;)\-]\s*(.*)$)', re.I | re.S)
 DETAIL_MAX = 3500
@@ -40,8 +41,18 @@ def one_line(value):
     return ' '.join((value or '').split())
 
 
-def card_id(request_id):
-    return f'T{request_id}'
+def card_id(request_id, seq=1):
+    """T435 for a request's first card, T435-2 for its second."""
+    return f'T{request_id}' if (seq or 1) <= 1 else f'T{request_id}-{seq}'
+
+
+def label(card):
+    """The ID of a card row; rows read with SEQ carry their position on the request."""
+    return card_id(card['request_id'], card['seq'] if 'seq' in card.keys() else 1)
+
+
+# Selects a card's position among its request's cards, for label(). Use with the cards table aliased c.
+SEQ = '(SELECT count(*) FROM cards s WHERE s.request_id=c.request_id AND s.id<=c.id) AS seq'
 
 
 def validate(category, want, question, options, pick):
@@ -78,14 +89,15 @@ def validate(category, want, question, options, pick):
     return want, question, options, index
 
 
-def render(request_id, thread, name, want, question, options, pick, replaces=False):
-    lines = [f'*{card_id(request_id)}* · {thread} · {name}']
+def render(request_id, thread, name, want, question, options, pick, replaces=False, seq=1):
+    this = card_id(request_id, seq)
+    lines = [f'*{this}* · {thread} · {name}']
     if replaces:
-        lines.append(f'New question; replaces the earlier {card_id(request_id)} card.')
+        lines.append(f'New question; replaces the earlier {card_id(request_id, seq - 1)} card.')
     lines += [f'Wants: {want}', f'Decide: {question}']
     for i, option in enumerate(options):
         lines.append(f'{LETTERS[i]}) {option}' + ('  ← suggested' if i == pick else ''))
-    answer = f'{card_id(request_id)} {LETTERS[pick]}' if options and pick is not None else f'{card_id(request_id)} your answer'
+    answer = f'{this} {LETTERS[pick]}' if options and pick is not None else f'{this} your answer'
     lines.append(f'Reply "{answer}", quote this, or "more"')
     return '\n'.join(lines)
 
@@ -93,14 +105,14 @@ def render(request_id, thread, name, want, question, options, pick, replaces=Fal
 def compact(card, thread, name, since):
     """One card as an entry in the daily list."""
     options = json.loads(card['options_json'] or '[]')
-    lines = [f'*{card_id(card["request_id"])}* {thread} · {name} (since {since})', card['question']]
+    lines = [f'*{label(card)}* {thread} · {name} (since {since})', card['question']]
     if options:
         lines.append('  '.join(f'{LETTERS[i]}) {o}' + (' ←' if i == card['pick'] else '') for i, o in enumerate(options)))
     return '\n'.join(lines)
 
 
 def detail(card, thread, name, asked):
-    lines = [f'*{card_id(card["request_id"])}* detail · {thread}', f'{name} asked:', (asked or '').strip()[:1500], '',
+    lines = [f'*{label(card)}* detail · {thread}', f'{name} asked:', (asked or '').strip()[:1500], '',
              'Note from the thread:', (card['detail'] or 'none').strip()]
     for update in json.loads(card['updates_json'] or '[]'):
         lines += ['', f'Update {update["at"]}:', update['note'].strip()]
@@ -117,6 +129,13 @@ def expand(text, options):
     rest = (match[2] or '').strip()
     chosen = f'{letter}) {options[LETTERS.index(letter)]}'
     return f'{chosen}. {rest}' if rest else chosen
+
+
+def receipt(card_label, thread, answer):
+    """The one line the owner gets back once their answer has reached the thread."""
+    answer = one_line(answer).rstrip('.')
+    answer = answer if len(answer) <= 90 else answer[:89] + '…'
+    return f'Got {card_label}: {answer}. Passed to {thread}.' if answer else f'Got {card_label}. Passed to {thread}.'
 
 
 def same_question(a, b):

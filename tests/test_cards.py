@@ -1,4 +1,5 @@
 """Decision cards: the escalation gate, answers by card ID, "more", the daily list and re-triage."""
+import sqlite3
 import subprocess
 
 import pytest
@@ -117,9 +118,9 @@ def test_asking_the_same_question_again_adds_to_the_card_silently_and_a_new_ques
     assert f'T{req}' in world.app.digest()['waiting']
     owner_says(world, 'more', f'more T{req}')
     assert 'Release failed a check; same question.' in world.sends[-1][7]
-    sends = len(world.sends)
     owner_says(world, 'answer2', f'T{req} B')
     claim = world.app.claim([req], 'project-a')
+    sends = len(world.sends)
     world.app.escalate(req, claim, note='', **{**CARD, 'question': 'Roll back the failed release?', 'category': 'deploy'})
     assert len(world.sends) == sends + 1 and 'Decide: Roll back the failed release?' in world.sends[-1][7]
     assert len(world.app.rows('SELECT * FROM cards WHERE closed_at IS NULL')) == 1
@@ -237,3 +238,50 @@ def test_resume_needs_an_owner_message_after_a_silent_update(world):
     world.app.escalate(req, claim, note='still blocked', **CARD)
     with pytest.raises(Refused, match='not written'):
         world.app.resume(req, 'project-a')
+
+
+# Receipts and per-card numbers
+
+def test_an_answer_gets_one_receipt_naming_the_choice_and_the_thread(world):
+    world.seed()
+    req, _ = escalate(world)
+    world.send_result = subprocess.CompletedProcess([], 0, '{"data":{"MsgID":"receipt-id"}}', '')
+    owner_says(world, 'answer', f'T{req} A')
+    assert world.sends[-1][7] == f'Got T{req}: A) Yes, release now. Passed to project-a.'
+    sends = len(world.sends)
+    world.app.sync()
+    with sqlite3.connect(world.wa_path) as db:  # the owner edits the answer
+        db.execute("UPDATE messages SET text=?,edited=1 WHERE msg_id='answer'", (f'T{req} B',))
+    world.advance(3 * 60)
+    world.app.sync()
+    assert len(world.sends) == sends and stored_answer(world, req) == ['B) Wait for PR 110']
+    world.app.claim([req], 'project-a')
+    assert owner_says(world, 'more', 'and tell Alice', quoted_msg_id='receipt-id')['answers'] == [req]
+
+
+def test_a_later_card_on_the_same_request_gets_its_own_number(world):
+    world.seed()
+    world.send_result = subprocess.CompletedProcess([], 0, '{"data":{"MsgID":"first-card"}}', '')
+    req, result = escalate(world)
+    assert result['card'] == f'T{req}'
+    owner_says(world, 'answer', f'T{req} A')
+    world.send_result = subprocess.CompletedProcess([], 0, '{"data":{"MsgID":"second-card"}}', '')
+    result = world.app.escalate(req, world.app.claim([req], 'project-a'), note='',
+                                **{**CARD, 'question': 'Release the follow-up fix too?'})
+    card = world.sends[-1][7]
+    assert result['card'] == f'T{req}-2' and card.startswith(f'*T{req}-2* · project-a')
+    assert card.endswith(f'Reply "T{req}-2 A", quote this, or "more"')
+    assert world.app.digest()['waiting'] == [f'T{req}-2']
+
+    # The first card's ID, or a quote on the first card, doesn't answer the second.
+    assert owner_says(world, 'late', f'T{req} A')['answers'] == []
+    assert world.sends[-1][7].startswith(f"T{req} isn't open any more; T{req}-2 replaced it.")
+    assert owner_says(world, 'quoted', 'B', quoted_msg_id='first-card')['answers'] == []
+    assert world.sends[-1][7].startswith(f"That card isn't open any more; T{req}-2 replaced it.")
+    assert world.app.get(req)['state'] == 'escalated'
+
+    owner_says(world, 'more', f'more T{req}-2')
+    assert world.sends[-1][7].startswith(f'*T{req}-2* detail')
+    assert owner_says(world, 'answer2', f't{req}-2 b')['answers'] == [req]
+    assert stored_answer(world, req)[-1] == 'B) Wait for PR 110'
+    assert world.sends[-1][7] == f'Got T{req}-2: B) Wait for PR 110. Passed to project-a.'
