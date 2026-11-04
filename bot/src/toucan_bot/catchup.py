@@ -152,12 +152,17 @@ def retry_now(con, chat):
         con.execute('UPDATE catchup SET retry_at=NULL WHERE conversation_id=? AND http_status IN (401,403)', (chat,))
 
 
+ROSTER_TIMEOUT = 60  # seconds for one chat's member list
+
+
 async def roster(con, app, chat):
     generation = store.invalidate_roster(con, chat['id'])
     key = 'roster_generation:' + chat['id']
     try:
-        # Chat rosters are not paginated. This is the Bot Connector, not Graph.
-        members = await app.api.from_service_url(chat['service_url']).conversations.members(chat['id']).get_all()
+        # Chat rosters are not paginated. This is the Bot Connector, not Graph. The SDK's
+        # HTTP client has no timeout, so one unanswered request would stall every sweep.
+        members = await asyncio.wait_for(
+            app.api.from_service_url(chat['service_url']).conversations.members(chat['id']).get_all(), ROSTER_TIMEOUT)
         with con:
             con.execute('BEGIN IMMEDIATE')
             if con.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()[0] != generation:

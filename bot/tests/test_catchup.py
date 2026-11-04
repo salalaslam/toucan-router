@@ -225,6 +225,21 @@ def test_graph_restore_and_stale_snapshots_preserve_latest_state(state):
     assert row['ts'] == '2026-10-24T10:00:00Z'
 
 
+def test_unanswered_roster_request_times_out_so_the_sweep_continues(state, monkeypatch):
+    con, settings = state
+    class Members:
+        def __init__(self, chat):
+            pass
+        async def get_all(self):
+            await asyncio.Event().wait()
+    app = SimpleNamespace(api=SimpleNamespace(from_service_url=lambda url: SimpleNamespace(
+        conversations=SimpleNamespace(members=Members))))
+    monkeypatch.setattr(catchup, 'ROSTER_TIMEOUT', 0.01)
+    store.upsert_conversation(con, id='group', type='groupChat', name=None, service_url='https://example.com', tenant_id=OWNER)
+    assert asyncio.run(catchup.roster(con, app, store.get_conversation(con, 'group'))) is False
+    assert con.execute("SELECT value FROM meta WHERE key='roster_error:group'").fetchone()[0] == 'TimeoutError'
+
+
 def test_rosters_distinguish_human_1on1_unnamed_group_and_bot_personal_chat(state, monkeypatch):
     con, settings = state
     (config.config_dir()).mkdir()
