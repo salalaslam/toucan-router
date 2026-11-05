@@ -229,6 +229,21 @@ def default_config_home(monkeypatch):
     monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
 
 
+@pytest.fixture(autouse=True)
+def hide_installed_upload_tool(monkeypatch, tmp_path):
+    # doctor runs the optional Loom uploader when it is on PATH. A developer who has
+    # toucan-router-tools installed must see the same results as CI, which doesn't, so
+    # only a toucan-upload-loom that a test puts under its own tmp_path is found.
+    import shutil
+    real = shutil.which
+    def which(name, *args, **kw):
+        found = real(name, *args, **kw)
+        if name == 'toucan-upload-loom' and found and not Path(found).is_relative_to(tmp_path):
+            return None
+        return found
+    monkeypatch.setattr(shutil, 'which', which)
+
+
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     w = World(tmp_path)
