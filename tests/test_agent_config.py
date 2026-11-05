@@ -202,3 +202,18 @@ def test_guide_checkout_topics_and_unknown(agent):
     assert 'messages modified in the last seven days' in teams
     assert 'older messages edited recently' in teams
     assert invoke('guide', 'missing', code=2)
+
+
+def test_edits_write_through_a_symlinked_config(agent, tmp_path):
+    path, invoke = agent
+    real = tmp_path / 'repo/toucan.toml'
+    real.parent.mkdir()
+    path.rename(real)
+    path.symlink_to(real)
+    before = real.read_bytes()
+    assert invoke('config', 'set', 'settings.owner_name', 'Bob')['status'] == 'updated'
+    assert path.is_symlink() and path.resolve() == real
+    assert load(real)['settings']['owner_name'] == 'Bob'
+    assert path.with_suffix('.toml.bak').read_bytes() == before
+    assert not (real.parent / 'toucan.toml.bak').exists()
+    assert not list(real.parent.glob('.toucan-*'))

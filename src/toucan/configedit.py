@@ -21,7 +21,8 @@ def read(path):
 
 
 def atomic(path, content):
-    path = Path(path).expanduser()
+    # Write through a symlink to the file it points at, so a linked config stays linked.
+    path = Path(path).expanduser().resolve()
     private_dir(path.parent)
     fd, name = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
     try:
@@ -51,7 +52,10 @@ def validate(raw):
 
 
 def save(path, raw, *, text=None):
-    path = Path(path).expanduser()
+    link = Path(path).expanduser()
+    # A config kept in another repo is often symlinked into place. Replace the file the link
+    # points at, not the link, so edits land in that repo. The backup stays next to the link.
+    path = link.resolve()
     serialized = validate(raw)
     text = serialized if text is None else text
     if tomllib.loads(text) != raw:
@@ -73,7 +77,7 @@ def save(path, raw, *, text=None):
         config.load(name)
         existed = path.exists()
         if existed:
-            atomic(path.with_name(path.name + '.bak'), path.read_bytes())
+            atomic(link.with_name(link.name + '.bak'), path.read_bytes())
         os.replace(name, path)
         return 'updated' if existed else 'created'
     finally:
