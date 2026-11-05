@@ -121,7 +121,10 @@ def migrate(db):
     db.execute("DELETE FROM meta WHERE key LIKE 'teams-ingestion:%'")
     for table, fields in (('messages', (('deferred_cutoff', 'REAL'), ('mentions_json', 'TEXT'), ('quoted_ids', 'TEXT'),
                                         ('own_text', 'TEXT'))),
-                          ('requests', (('promise', 'TEXT'), ('promise_due', 'REAL')))):
+                          ('requests', (('promise', 'TEXT'), ('promise_due', 'REAL'))),
+                          ('cards', (('delegate_jid', 'TEXT'), ('delegate_name', 'TEXT'),
+                                     ('wait_minutes', 'INTEGER'), ('forward_outbox', 'INTEGER'),
+                                     ('answered_by', 'TEXT')))):
         if table == 'requests':
             # Before live routing, message_id was UNIQUE and a request had at most one router decision;
             # the first live-routing build kept held requests in state 'new'.

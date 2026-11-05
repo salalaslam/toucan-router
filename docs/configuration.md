@@ -128,7 +128,7 @@ One table per T3 owner thread. See [setup-t3.md](setup-t3.md).
 |---|---|---|
 | `hook_file` | yes | Mode-600 file holding the thread's T3 webhook URL. |
 | `t3_thread` | no | T3 thread ID, used only when Toucan can't find the live thread from the hook's task. |
-| `project` | no | Free text for your own reference. |
+| `project` | no | Project key used to resolve escalation delegation. Other free text is allowed. |
 | `fallback` | no | Another thread key that takes requests while this one is rate-limited. |
 | `rotate_tokens` | no | Overrides `settings.rotate_tokens` for this thread. |
 
@@ -152,6 +152,43 @@ refuses while a project or `router_general_thread` uses that thread.
 toucan add project project-a --name 'Project A' --alias portal --description 'The customer portal' --thread project-a --json
 toucan remove project project-a --json
 ```
+
+### Project escalation delegates
+
+| Key | Required | Meaning |
+|---|---|---|
+| `escalate_to` | no | Person key for the project engineering lead. The person must have a phone WhatsApp JID. |
+| `escalate_from` | no | ISO datetime with an offset. Before this time, cards go to the owner. Omit to start immediately. |
+| `escalate_wait_minutes` | no | Positive integer, default 10. Unanswered cards go to the owner once this many minutes after creation. |
+
+Set or clear the policy atomically. Each set replaces all three escalation settings;
+omitting `--from` starts immediately and omitting `--wait-minutes` uses 10.
+
+```sh
+toucan config escalation project-a --to bob --from '2026-11-06T09:00:00+00:00' --wait-minutes 10 --json
+toucan config escalation project-a --clear --json
+```
+
+The command validates the whole config before writing. The existing `config set` and
+`config unset` commands also accept these keys.
+
+Toucan uses the saved live router decision, including split-message parts, to find the
+project. Otherwise it uses the thread's `project` key, the project's thread, or fallback
+ancestry. An original route can disambiguate a shared fallback. If the stored data identifies
+several projects, delivery stays with the owner.
+
+Sent cards remember the delegate's phone JID, name and wait time. Config changes apply to
+new cards. The delegate can answer by card ID, letter or quote, and request `more`, in their
+own WhatsApp chat. `T435 pass` forwards that card to the owner immediately; bare `pass`
+works when only one card is open to that delegate. Passing sends a receipt and cancels the
+timed forward. Both people may still answer. Receipts go to the person answering. The owner can also answer; the first
+person's answer wins and the other receives an already-answered notice.
+
+Periodic sync checks answers before forwarding overdue cards. Forwarding commits one outbox
+attempt before sending, so restarts do not duplicate it. Failed or uncertain sends require
+operator inspection, as with other deliveries. Closed, replaced and answered cards do not
+forward. Held cards, same-question updates, the 09:00 owner list and Toucan's own routing
+escalations keep their existing behavior.
 
 ## `[[routes]]`
 

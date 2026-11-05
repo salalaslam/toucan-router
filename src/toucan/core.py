@@ -10,7 +10,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import cards, router, sources, t3
-from .config import GROUP, PHONE, Refused, ValidationError, hook_warning, prefixed, reply_phone
+from .config import GROUP, PHONE, Refused, ValidationError, hook_warning, prefixed, reply_phone, timestamp
 from .effects import Effects
 from .storage import account_warning, event, insert, private_dir
 
@@ -245,6 +245,7 @@ class App:
                     report['answers'] = self.owner_answers(mapping, now, problems)
                 except (OSError, KeyError, sqlite3.Error):
                     problems['health:owner_chat'] = 'Owner WhatsApp chat unavailable; escalation answers not read'
+            self.forward_escalations(now)
             for route in self.cfg['routes']:
                 if route['source'] == 'whatsapp' and mapping is None:
                     continue  # do not consume unresolved messages while identity data is locked
@@ -277,6 +278,10 @@ class App:
                 route_result = dict(route=route['name'], messages=len(batch), seeded=not bool(seeded), created=[])
                 report['routes'].append(route_result)
                 for m in batch:
+                    if m['source'] == 'whatsapp' and self.db.execute(
+                            'SELECT 1 FROM meta WHERE key=?',
+                            ('card-command:' + m['chat'] + ':' + m['msg_id'],)).fetchone():
+                        continue  # a pass or losing answer must not become a routed request
                     old = self.stored_message(m, route)
                     if not old and m['deleted']:
                         continue
@@ -421,37 +426,47 @@ class App:
         documents never answer. When that chat is also a route, only card IDs, quotes and the
         message just after an escalation answer, and anything else becomes a request."""
         sent = self.rows("SELECT o.external_id,o.text AS sent_text,o.created_at AS sent_at,r.id,r.thread,r.route,r.state,r.closed_at,"
-                         "c.closed_at AS card_closed FROM outbox o JOIN requests r ON r.id=o.request_id "
-                         "LEFT JOIN cards c ON c.outbox_id=o.id AND c.request_id=r.id "
+                         "c.closed_at AS card_closed,c.delegate_jid FROM outbox o JOIN requests r ON r.id=o.request_id "
+                         "LEFT JOIN cards c ON (c.outbox_id=o.id OR c.forward_outbox=o.id) AND c.request_id=r.id "
                          "WHERE o.kind='escalation' AND o.state='sent'")
         # Cards held for the daily list, or sent there, have no escalation message of their own.
-        carded = self.rows("SELECT c.request_id AS id,c.created_at AS sent_at,r.thread,r.route,r.state,r.closed_at "
+        carded = self.rows("SELECT c.request_id AS id,c.created_at AS sent_at,c.delegate_jid,r.thread,r.route,r.state,r.closed_at "
                            "FROM cards c JOIN requests r ON r.id=c.request_id WHERE c.closed_at IS NULL AND r.state!='closed'")
-        waiting = [w for w in sent if w['state'] != 'closed']
+        waiting = [w for w in sent if w['state'] != 'closed' or w['delegate_jid']]
         if not waiting and not carded:
             return []
         owner = self.settings['owner_whatsapp']
-        chats = self.owner_chats(mapping)
+        delegates = {w['delegate_jid'] for w in sent + carded if w['delegate_jid']}
+        participants = delegates | {owner}
+        chats = list(participants | {lid for lid, pn in mapping.items() if pn in participants})
         routed = {c for r in self.cfg['routes'] if r['source'] == 'whatsapp' for c in r['chats']} & set(chats)
         by_id = {w['external_id']: w for w in waiting if w['external_id']}
         # A card replaced by a later one on the same request: quoting it must not answer the new card.
         replaced = {w['external_id'] for w in waiting if w['external_id'] and w['card_closed'] is not None}
         by_text = {w['sent_text']: w for w in waiting}
-        by_request = {**{w['id']: w for w in carded}, **{w['id']: w for w in waiting}}
+        by_request = {**{w['id']: w for w in waiting}, **{w['id']: w for w in carded}}
         for row in self.db.execute("SELECT key,value FROM meta WHERE key LIKE 'quote:%'"):
             if int(row['value']) in by_request:
                 by_id[row['key'][6:]] = by_request[int(row['value'])]  # a card's "more" detail message
-        answered, last_out = [], None
+        answered, last_by_chat = [], {}
         for row in sources.owner_chat(self.paths, chats, min(w['sent_at'] for w in waiting + carded) - 60):
             if row['from_me']:
                 last_out = row['msg_id']
+                last_by_chat[row['chat_jid']] = last_out
                 if last_out not in by_id and row['text'] in by_text:
                     by_id[last_out] = by_text[row['text']]  # sender reply carried no message ID
                     if by_text[row['text']]['card_closed'] is not None:
                         replaced.add(last_out)
                 continue
-            if mapping.get(row['sender_jid'], row['sender_jid']) != owner:
+            actor = mapping.get(row['sender_jid'], row['sender_jid'])
+            if actor not in participants:
                 continue
+            consumed = 'card-command:' + row['chat_jid'] + ':' + row['msg_id']
+            if self.db.execute('SELECT 1 FROM meta WHERE key=?', (consumed,)).fetchone():
+                continue
+            last_out = last_by_chat.get(row['chat_jid'])
+            eligible = {k: w for k, w in by_request.items() if actor == owner or w['delegate_jid'] == actor}
+
             said = raw = row['text'] or row['display_text'] or row.get('media_caption') or ''
             if row.get('is_forwarded') and not row['quoted_msg_id']:
                 continue  # forwarded material is something to look at, not an answer or a command
@@ -467,45 +482,66 @@ class App:
                 more, tagged = cards.MORE.match('more ' + tagged[1]), None  # "T435 more"
             if tagged:
                 named = cards.card_id(tagged[1], int(tagged[2] or 1))
-                target = by_request.get(int(tagged[1]))
+                target = eligible.get(int(tagged[1]))
                 if not target:
-                    self.notice_once(row['msg_id'], f'{named} isn\'t waiting on you.' + self.open_cards_hint(by_request))
+                    self.notice_once(row['msg_id'], f'{named} isn\'t waiting on you.' + self.open_cards_hint(eligible), recipient=actor)
                     continue
                 current = self.card_label(target['id'])
                 if named.upper() != current.upper():
                     self.notice_once(row['msg_id'], f'{named} isn\'t open any more; {current} replaced it. '
-                                                    f'Send your answer again starting with {current}, or "more {current}".')
+                                                    f'Send your answer again starting with {current}, or "more {current}".', recipient=actor)
                     continue
                 said = tagged[3].strip()
                 if not said and not row.get('media_type'):
                     continue  # just the ID; nothing to hand back
             elif more and more[1]:
-                target = by_request.get(int(more[1]))
+                target = eligible.get(int(more[1]))
                 if not target:
-                    self.notice_once(row['msg_id'], f'{cards.card_id(more[1])} isn\'t waiting on you.' + self.open_cards_hint(by_request))
+                    self.notice_once(row['msg_id'], f'{cards.card_id(more[1])} isn\'t waiting on you.' + self.open_cards_hint(eligible), recipient=actor)
                     continue
             elif row['quoted_msg_id']:
                 target = by_id.get(row['quoted_msg_id'])
                 if target and row['quoted_msg_id'] in replaced:
                     current = self.card_label(target['id'])
                     self.notice_once(row['msg_id'], f'That card isn\'t open any more; {current} replaced it. '
-                                                    f'Send your answer again starting with {current}, or "more {current}".')
+                                                    f'Send your answer again starting with {current}, or "more {current}".', recipient=actor)
                     continue
             elif row.get('is_forwarded') or (row['media_type'] == 'document' and not (row['text'] or row.get('media_caption'))):
                 continue  # forwarded material and bare files are something to look at, not an answer
-            elif routed:
+            elif said.strip().lower() == 'pass' and actor != owner:
+                insert(self.db, 'meta', key=consumed, value=str(now))
+                open_to_delegate = [w for w in eligible.values() if (c := self.open_card(w['id']))
+                                    and c['delegate_jid'] == actor and c['answered_at'] is None]
+                target = open_to_delegate[0] if len(open_to_delegate) == 1 else None
+                if len(open_to_delegate) > 1:
+                    self.notice_once(row['msg_id'], 'Which card? Send its ID followed by pass.', recipient=actor)
+            elif actor == owner and row['chat_jid'] in routed:
                 target = by_id.get(last_out)
             else:
-                live = {w['id'] for w in sent if w['sent_at'] <= row['ts'] and (w['closed_at'] is None or w['closed_at'] > row['ts'])}
-                live |= {w['id'] for w in carded if w['sent_at'] <= row['ts']}
-                target = by_id.get(last_out) or (by_request.get(next(iter(live))) if len(live) == 1 else None)
+                live = {w['id'] for w in sent if (actor == owner or w['delegate_jid'] == actor) and w['sent_at'] <= row['ts'] and (w['closed_at'] is None or w['closed_at'] > row['ts'])}
+                live |= {w['id'] for w in carded if (actor == owner or w['delegate_jid'] == actor) and w['sent_at'] <= row['ts']}
+                target = by_id.get(last_out) or (eligible.get(next(iter(live))) if len(live) == 1 else None)
                 if not target and len(live) > 1:
                     ids = ', '.join(self.card_label(i) for i in sorted(live))
-                    self.notice_once(row['msg_id'], f'Which card is that for? Send it again starting with the ID: {ids}.')
-            if not target:
+                    self.notice_once(row['msg_id'], f'Which card is that for? Send it again starting with the ID: {ids}.', recipient=actor)
+            if not target or target['id'] not in eligible:
+                continue
+            card = self.open_card(target['id']) or self.db.execute('SELECT * FROM cards WHERE request_id=? ORDER BY id DESC LIMIT 1', (target['id'],)).fetchone()
+            if card and card['answered_by'] and card['answered_by'] != actor:
+                insert(self.db, 'meta', key=consumed, value=str(now))
+                name = self.settings['owner_name'] if card['answered_by'] == owner else card['delegate_name']
+                self.notice_once(row['msg_id'], f'{self.card_label(target["id"])} already answered by {name}.', recipient=actor)
+                continue
+            if said.strip().lower() == 'pass' and card and card['delegate_jid'] == actor:
+                if card['closed_at'] is None and card['answered_at'] is None:
+                    self.forward_card(card, f'{card["delegate_name"]} passed this to you')
+                    self.db.execute('INSERT OR IGNORE INTO meta VALUES (?,?)', (consumed, str(now)))
+                    self.once('pass:' + row['chat_jid'] + ':' + row['msg_id'],
+                              f'{self.card_label(target["id"])} sent to {self.settings["owner_name"]}.',
+                              target['id'], recipient=actor)
                 continue
             if more:
-                self.send_detail(row, target, raw)
+                self.send_detail(row, target, raw, actor)
                 continue
             card = self.open_card(target['id'])
             if card:
@@ -523,7 +559,7 @@ class App:
                 continue
             else:
                 message = insert(self.db, 'messages', source='whatsapp', account=self.paths.wa_account, chat=row['chat_jid'],
-                                 msg_id=row['msg_id'], route=target['route'], sender_key='owner',
+                                 msg_id=row['msg_id'], route=target['route'], sender_key='owner' if actor == owner else next((k for k, p in self.cfg['people'].items() if actor in p.get('whatsapp', [])), 'delegate'),
                                  sender_raw=row['sender_jid'], sender_name=row['sender_name'], is_owner=1, ts=row['ts'],
                                  text=text, own_text=raw, attachments_json=note['attachments_json'],
                                  edited=int(bool(row['edited'])), deleted=0, first_seen=now, last_seen=now)
@@ -533,6 +569,8 @@ class App:
                 continue
             self.db.execute('UPDATE cards SET answered_at=? WHERE request_id=? AND closed_at IS NULL AND answered_at IS NULL',
                             (now, target['id']))
+            if card and card['delegate_jid']:
+                self.db.execute('UPDATE cards SET answered_by=? WHERE id=?', (actor, card['id']))
             if state == 'escalated':
                 self.db.execute("UPDATE requests SET state='new',claim_id=NULL,claimed_at=NULL,done_at=NULL,closed_at=NULL,"
                                 "close_reason=NULL,change_pending=0,wakes=0,last_wake_at=NULL WHERE id=?", (target['id'],))
@@ -541,7 +579,7 @@ class App:
             self.record('owner_answered', target['thread'], target['id'])
             answered.append(target['id'])
             if not old:  # an edited answer reaches the thread too, but gets no second receipt
-                self.once('receipt:' + row['msg_id'], cards.receipt(self.card_label(target['id']), target['thread'], text), target['id'])
+                self.once('receipt:' + row['msg_id'], cards.receipt(self.card_label(target['id']), target['thread'], text), target['id'], recipient=actor)
         return answered
 
     def open_card(self, req):
@@ -557,25 +595,25 @@ class App:
         ids = [self.card_label(r) for r, w in sorted(by_request.items()) if w['state'] == 'escalated']
         return f' Open: {", ".join(ids)}.' if ids else ' Nothing is waiting on you.'
 
-    def notice_once(self, msg_id, text):
+    def notice_once(self, msg_id, text, recipient=None):
         """A one-line reply to the owner about one of their messages, sent once."""
-        self.once('notice:' + msg_id, text)
+        self.once('notice:' + msg_id, text, recipient=recipient)
 
-    def once(self, key, text, req=None):
+    def once(self, key, text, req=None, recipient=None):
         """Send the owner text once per key. With req, a quote on it (or a reply right after it) goes to that request."""
         if self.db.execute('SELECT 1 FROM meta WHERE key=?', (key,)).fetchone():
             return
         insert(self.db, 'meta', key=key, value=str(self.fx.now()))
-        self.queue_owner(text, req)
+        self.queue_owner(text, req, recipient)
 
-    def queue_owner(self, text, req=None):
+    def queue_owner(self, text, req=None, recipient=None):
         if self.shadow:
             return None
-        out = self._queue_delivery(None, None, 'escalation', 'whatsapp', self.settings['owner_whatsapp'], text, None)
+        out = self._queue_delivery(None, None, 'escalation', 'whatsapp', recipient or self.settings['owner_whatsapp'], text, None)
         self.queued.append((out, req))
         return out
 
-    def send_detail(self, row, target, raw):
+    def send_detail(self, row, target, raw, recipient=None):
         """The owner replied "more": send the card's full context once. The message is stored with no
         route, so no inbox shows it and an owner-chat route doesn't make it a request."""
         now = self.fx.now()
@@ -599,7 +637,7 @@ class App:
             last = self.db.execute("SELECT text FROM outbox WHERE request_id=? AND kind='escalation' AND state='sent' "
                                    'ORDER BY id DESC LIMIT 1', (target['id'],)).fetchone()
             text = last['text'] if last else f'No detail stored for {self.card_label(target["id"])}.'
-        self.queue_owner(text, target['id'])
+        self.queue_owner(text, target['id'], recipient)
         self.record('card_detail', req['thread'], target['id'])
 
     def flush_notices(self, problems):
@@ -1120,11 +1158,82 @@ class App:
                                         'held for the daily list, which shows the owner every card waiting on them'))
             elif draft:
                 body = f'Draft for {route.get("label") or message["chat"]} → reply to {name}:\n\n{body}'
+            if escalation and card is not None and card_row:
+                project = self.escalation_project(row)
+                if project and project.get('escalate_to') and self.fx.now() >= timestamp(project.get('escalate_from', '1970-01-01T00:00:00+00:00')):
+                    person = self.cfg['people'][project['escalate_to']]
+                    recipient = next(jid for jid in person['whatsapp'] if PHONE.fullmatch(jid))
+                    wait = project.get('escalate_wait_minutes', 10)
+                    body += (f'\nGoes to {self.settings["owner_name"]} if not answered in {wait} minutes; '
+                             f'reply pass to send it to {self.settings["owner_name"]} now.')
+                    self.db.execute('UPDATE cards SET delegate_jid=?,delegate_name=?,wait_minutes=? WHERE id=?',
+                                    (recipient, person['name'], wait, card_row))
             out = self._queue_delivery(req, row['thread'], kind, 'teams-bot' if as_bot else 'whatsapp', recipient, body, file)
             if card_row:
                 self.db.execute('UPDATE cards SET outbox_id=? WHERE id=?', (out, card_row))
         result = self._send_outbox(out, row['thread'], req, keep_open, promise, due)
         return dict(result, card=self.card_label(req)) if escalation else result
+
+    def escalation_project(self, row):
+        """Use a recorded live decision first, then thread metadata and fallback ancestry.
+        Ambiguous multi-project decisions deliberately keep owner delivery.
+        """
+        projects = self.cfg['projects']
+        decisions = self.rows("SELECT d.* FROM router_decisions d JOIN requests r ON r.id=d.request_id "
+                              "WHERE r.message_id=? AND d.mode='live' ORDER BY d.id DESC", (row['message_id'],))
+        for decision in decisions:
+            parts = json.loads(decision['parts_json'] or '[]')
+            keys = {p['project'] for p in parts if row['part'] and p['text'] in row['part']}
+            if not keys and decision['request_id'] == row['id']:
+                keys = set(json.loads(decision['projects_json'] or '[]'))
+            if keys:
+                return projects.get(next(iter(keys))) if len(keys) == 1 else None
+        threads = self.cfg['threads']
+        key = row['thread']
+        project = threads.get(key, {}).get('project')
+        if project in projects:
+            return projects[project]
+        candidates = set()
+        for origin, data in threads.items():
+            seen, current = set(), origin
+            while current in threads and current not in seen:
+                seen.add(current)
+                if current == key:
+                    candidate = data.get('project')
+                    if candidate in projects:
+                        candidates.add(candidate)
+                    candidates.update(k for k, p in projects.items() if p['thread'] == origin)
+                    break
+                current = threads[current].get('fallback')
+        if len(candidates) == 1:
+            return projects[next(iter(candidates))]
+        # A shared standby can still identify the original route's project.
+        route = next((r for r in self.cfg['routes'] if r['name'] == row['route']), {})
+        original = route.get('thread')
+        candidate = threads.get(original, {}).get('project')
+        if candidate in candidates:
+            return projects[candidate]
+        return None
+
+    def forward_escalations(self, now):
+        for card in self.rows("SELECT c.*,o.text FROM cards c JOIN outbox o ON o.id=c.outbox_id "
+                              "JOIN requests r ON r.id=c.request_id WHERE c.delegate_jid IS NOT NULL "
+                              "AND c.closed_at IS NULL AND c.answered_at IS NULL AND r.state!='closed' "
+                              "AND c.forward_outbox IS NULL AND o.state='sent' "
+                              "AND c.created_at+c.wait_minutes*60<=?", (now,)):
+            self.forward_card(card, f'{card["delegate_name"]} did not answer within {card["wait_minutes"]} minutes.')
+
+    def forward_card(self, card, reason):
+        if card['forward_outbox'] is not None:
+            return
+        original = self.db.execute("SELECT text FROM outbox WHERE id=? AND state='sent'", (card['outbox_id'],)).fetchone()
+        if original:
+            out = self.queue_owner(original['text'] + '\n' + reason, card['request_id'])
+            if out is not None:
+                # Associate the owner copy durably so quotes work even if the process stops
+                # after sending but before flush_notices records its convenience quote alias.
+                self.db.execute('UPDATE outbox SET request_id=? WHERE id=?', (card['request_id'], out))
+                self.db.execute('UPDATE cards SET forward_outbox=? WHERE id=?', (out, card['id']))
 
     def drafts_chat(self):
         chat = self.settings['drafts_whatsapp']
@@ -1150,7 +1259,7 @@ class App:
         live = bool(last and (last['held'] or last['out_state'] == 'sent'))
         if live and cards.same_question(last['question'], card['question']):
             updates = json.loads(last['updates_json'] or '[]') + [dict(at=self.local(now), note=note)]
-            self.db.execute('UPDATE cards SET updates_json=?,answered_at=NULL WHERE id=?', (json.dumps(updates), last['id']))
+            self.db.execute('UPDATE cards SET updates_json=?,answered_at=NULL,answered_by=NULL WHERE id=?', (json.dumps(updates), last['id']))
             self.db.execute("UPDATE requests SET state='escalated',claim_id=NULL WHERE id=?", (row['id'],))
             self.record('card_updated', row['thread'], row['id'], card=last['id'])
             return None, last['id'], 'updated'

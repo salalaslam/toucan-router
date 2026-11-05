@@ -24,7 +24,7 @@ GROUP = re.compile(r'^\d+(-\d+)?@g\.us$')
 # Keys toucan reads (active_ts is added by load). Anything else is likely a typo that would do nothing.
 KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email'},
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens'},
-            projects={'name', 'aliases', 'description', 'thread'},
+            projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes'},
             routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
                     'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'active_ts'},
             sources={'whatsapp': {'store', 'account', 'service_unit'},
@@ -180,6 +180,15 @@ def validate(cfg):
             raise ValidationError(f'project {key}: name required')
         if not isinstance(project.get('thread'), str) or project['thread'] not in threads:
             raise ValidationError(f'project {key}: thread must be a configured thread')
+        if 'escalate_to' in project:
+            delegate = project['escalate_to']
+            if not isinstance(delegate, str) or delegate not in people or not any(PHONE.fullmatch(jid) for jid in people[delegate].get('whatsapp', [])):
+                raise ValidationError(f'project {key}: escalate_to must be a person with a phone WhatsApp JID')
+        if 'escalate_from' in project:
+            timestamp(project['escalate_from'])
+        wait = project.setdefault('escalate_wait_minutes', 10)
+        if type(wait) is not int or wait <= 0:
+            raise ValidationError(f'project {key}: escalate_wait_minutes must be a positive integer')
         aliases = project.get('aliases', [])
         if not isinstance(aliases, list) or any(not isinstance(a, str) or not re.search(r'\w', a) for a in aliases):
             raise ValidationError(f'project {key}: aliases must be a list of words or names')
