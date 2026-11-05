@@ -167,6 +167,13 @@ def parser():
         if action == 'set':
             sub.add_argument('value', nargs='?')
             sub.add_argument('--value', dest='values', action='append')
+    sub = edit.add_parser('escalation')
+    options(sub)
+    sub.add_argument('project')
+    sub.add_argument('--to')
+    sub.add_argument('--from', dest='start')
+    sub.add_argument('--wait-minutes', type=int)
+    sub.add_argument('--clear', action='store_true')
     hook = commands.add_parser('hook').add_subparsers(dest='action', required=True)
     for action in ('set', 'check'):
         sub = hook.add_parser(action)
@@ -424,6 +431,8 @@ def agent_command(args, effects, paths):
     if c == 'guide':
         return agentsetup.guide(args.topic, args.list)
     if c == 'config':
+        if args.action == 'escalation':
+            return configedit.escalation(path, args.project, args.to, args.start, args.wait_minutes, args.clear)
         values = None
         if args.action == 'set':
             if args.value is not None and args.values:

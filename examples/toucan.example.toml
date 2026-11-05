@@ -123,6 +123,9 @@ active_from = "2026-10-17T00:00:00+00:00"
 # aliases = ["proj-a", "the portal"]
 # description = "Customer portal and its API"   # one line the router reads
 # thread = "project-a"
+# escalate_to = "alice"       # configured person with a phone WhatsApp JID
+# escalate_from = "2026-11-06T09:00:00+00:00"  # optional activation time with offset
+# escalate_wait_minutes = 10  # positive integer; default 10
 
 [sources.whatsapp]
 store = "~/.local/state/wacli"

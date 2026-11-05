@@ -204,3 +204,22 @@ def remove(path, kind, key):
     else:
         raw.get(table, {}).pop(key, None)
     return dict(status=save(path, raw), kind=kind, key=key)
+
+
+def escalation(path, project, to=None, start=None, wait=None, clear=False):
+    raw = read(path)
+    if project not in raw.get('projects', {}):
+        raise config.ValidationError('unknown project')
+    if clear and any(v is not None for v in (to, start, wait)):
+        raise config.ValidationError('--clear cannot be combined with escalation flags')
+    if not clear and to is None:
+        raise config.ValidationError('--to is required unless --clear is used')
+    entry = raw['projects'][project]
+    for key in ('escalate_to', 'escalate_from', 'escalate_wait_minutes'):
+        entry.pop(key, None)
+    if not clear:
+        entry['escalate_to'] = to
+        if start is not None:
+            entry['escalate_from'] = start
+        entry['escalate_wait_minutes'] = 10 if wait is None else wait
+    return dict(status=save(path, raw), project=project)
