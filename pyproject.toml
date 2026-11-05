@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "toucan-router"
-version = "0.1.0"
+version = "0.2.0"
 description = "Route approved chat requests to their T3 threads and track replies."
 readme = "README.md"
 requires-python = ">=3.11"

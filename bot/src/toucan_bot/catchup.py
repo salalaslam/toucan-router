@@ -161,8 +161,10 @@ async def roster(con, app, chat):
     try:
         # Chat rosters are not paginated. This is the Bot Connector, not Graph. The SDK's
         # HTTP client has no timeout, so one unanswered request would stall every sweep.
-        members = await asyncio.wait_for(
-            app.api.from_service_url(chat['service_url']).conversations.members(chat['id']).get_all(), ROSTER_TIMEOUT)
+        # asyncio.timeout, not wait_for: on Python 3.11 wait_for can swallow a cancel that
+        # arrives as the fetch finishes, and the bot then never shuts down.
+        async with asyncio.timeout(ROSTER_TIMEOUT):
+            members = await app.api.from_service_url(chat['service_url']).conversations.members(chat['id']).get_all()
         with con:
             con.execute('BEGIN IMMEDIATE')
             if con.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()[0] != generation:

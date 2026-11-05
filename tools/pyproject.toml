@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "toucan-router-tools"
-version = "0.1.0"
+version = "0.2.0"
 description = "Optional Loom and Google Sheets tools for Toucan Router."
 readme = {text = "Optional tools for Toucan Router. See the project homepage for setup instructions.", content-type = "text/plain"}
 license = "MIT"

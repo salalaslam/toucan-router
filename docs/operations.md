@@ -158,6 +158,11 @@ It needs `[projects.KEY]` tables, `settings.router_general_thread`, and usually
 requests created before the router was switched on are not decided; on a live route, only
 requests created while it is live are routed.
 
+The router is experimental. Run a route in `"shadow"` for a few days first, mark its
+decisions with `toucan router mark`, and check `toucan router stats` before you switch it
+to `"live"`. Follow-ups are the weak spot: a no-project message from the same person within
+`followup_minutes` joins their last request, even when it starts a new topic.
+
 For each new request it tries these steps in order and stops at the first that answers:
 
 1. **Reply or quote.** The message replies to or quotes a request's message, or a reply
