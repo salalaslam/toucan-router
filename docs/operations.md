@@ -98,6 +98,10 @@ The request stays open with no claim. Answer on WhatsApp in any of these ways:
 - `more`, quoting the card, or `more T43`, sends the thread's full note and the requester's
   message. Quoting that detail message answers the card too.
 
+To check that Toucan is up, send `ping` on its own to the assistant number. Toucan replies
+`pong` within about a minute with the time, the number of open requests and the cards waiting
+on you. A ping older than 10 minutes when Toucan first sees it gets no reply.
+
 The answer goes back to the thread as `OWNER ANSWER`; the request returns to `new` and the
 thread is woken. If the thread escalates the same request again with the same question, the
 new note is added to the card without a message (`more` shows it) and the card waits for the
