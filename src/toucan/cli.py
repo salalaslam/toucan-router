@@ -11,6 +11,17 @@ from . import agentsetup, configedit, discovery, router, services, setup
 from .effects import Effects
 from .storage import connect
 
+# Printed with every inbox, so the rule is in front of the thread when it answers. Owner threads replied
+# from memory to keep to the reply deadline, and dropped their own doubts to fit a short reply.
+ACCURACY = ('Accuracy before speed. State something as fact only if you checked it in this turn: the code, the '
+            'project documents, the chat history, or an official source you opened. Memory, an old note or what '
+            'seems likely is not a check. Otherwise check it first, or say plainly it is not confirmed ("I think", '
+            '"not confirmed yet"), and keep those words even in a short reply. If you cannot check before the '
+            'reply is due, send a one-line acknowledgement with --promise instead of guessing. If the question '
+            'uses a term you cannot match for certain to something in the chat history or documents, ask what '
+            'they mean with --keep-open before answering. Before sending, reread the reply: every claim must be '
+            'checked or marked as not confirmed.')
+
 
 def parser():
     p = argparse.ArgumentParser(prog='toucan')
@@ -236,7 +247,7 @@ def dispatch(args, app):
             return f'No new requests for {args.thread}. {rearm}'
         ids = ' '.join(map(str, found['requests']))
         return (f'{args.thread}: requests {ids} need you (latest {found["latest"]}). Pause what you are doing: run '
-                f'`toucan inbox --thread {args.thread}`, claim them and reply within two minutes. {rearm}')
+                f'`toucan inbox --thread {args.thread}`, claim them and acknowledge within two minutes; send the answer once you have checked it. {rearm}')
     if c == 'rotate':
         result = app.rotate(args.thread, args.check, args.reset)
         return result if args.json or args.check or args.reset else result['instructions']
@@ -253,8 +264,8 @@ def dispatch(args, app):
             commands += f'; not yours: toucan bounce REQ --thread {args.thread} [--claim ID] --reason TEXT'
         waiting = app.waiter_running(args.thread)
         if args.json:
-            return dict(next_steps=commands, waiter_running=waiting, untrusted_messages=messages)
-        blocks = [commands]
+            return dict(next_steps=commands, accuracy=ACCURACY, waiter_running=waiting, untrusted_messages=messages)
+        blocks = [commands, ACCURACY]
         if not waiting:
             blocks.append(f'No `toucan wait --thread {args.thread}` is running. Start it now as a background command '
                           '(it exits when a new request arrives, even mid-task), and start it again each time it exits.')

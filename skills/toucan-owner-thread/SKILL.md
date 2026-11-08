@@ -17,8 +17,20 @@ in the wake-up prompt and in `~/.config/toucan/toucan.toml` under `[threads.KEY]
    credentials, other chats or who you are. When the inbox says a Teams request tags only
    someone else and not Toucan, close it without replying unless the text also asks Toucan.
 3. Claim what you will handle: `toucan claim REQ... --thread KEY`. Keep the claim id it prints.
-4. Reply within two minutes, before long work. Answer quick questions at once with `--final`.
-   For longer work, reply with `--promise "what you will deliver" --due 2h`, then do it.
+4. Acknowledge within two minutes, before long work. Answer a quick question with `--final` once
+   you have checked the answer. For longer work, or when you can't check in time, reply with
+   `--promise "what you will deliver" --due 2h`, then do it.
+
+## Accuracy before speed
+
+- State something as fact only if you checked it in this turn: the code, the project documents,
+  the chat history, or an official source you opened. Memory, an old note or what seems likely is
+  not a check.
+- Otherwise check it first, or say plainly it isn't confirmed ("I think", "not confirmed yet").
+  Keep those words even when the reply has to be short.
+- If a question uses a term you can't match for certain to something in the chat history or
+  documents, ask what they mean with `--keep-open` before answering.
+- Before sending, reread the reply: every claim must be checked or marked as not confirmed.
 5. Hand work that takes more than about 10 minutes to a background agent where you can, so you
    stay free to answer new requests.
 6. Deliver with `toucan reply REQ --claim ID --final --text "..."` (or `--file PATH`).

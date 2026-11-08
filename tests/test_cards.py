@@ -285,3 +285,13 @@ def test_a_later_card_on_the_same_request_gets_its_own_number(world):
     assert owner_says(world, 'answer2', f't{req}-2 b')['answers'] == [req]
     assert stored_answer(world, req)[-1] == 'B) Wait for PR 110'
     assert world.sends[-1][7] == f'Got T{req}-2: B) Wait for PR 110. Passed to project-a.'
+
+
+def test_an_unquoted_message_long_after_the_answer_does_not_reach_that_card(world):
+    world.seed()
+    req, _ = escalate(world)
+    assert owner_says(world, 'answer', 'A')['answers'] == [req]
+    assert owner_says(world, 'soon', 'and tell Alice first')['answers'] == [req]
+    world.advance(60 * 60)
+    assert not owner_says(world, 'later', '360.8').get('answers')
+    assert stored_answer(world, req) == ['A) Yes, release now', 'and tell Alice first']

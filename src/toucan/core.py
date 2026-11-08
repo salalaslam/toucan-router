@@ -30,6 +30,7 @@ DOWNLOAD_FIELDS = ('local_path', 'download_status', 'http_status', 'download_err
 TAG = re.compile(r'@\[([^\[\]]*)\]')
 PING = re.compile(r'\s*ping[\s.!?]*', re.I)
 PING_WINDOW = 600  # a ping older than this when first seen gets no pong
+ANSWER_FOLLOWUP_SECONDS = 600  # an unquoted owner message this soon after a card's answer still adds to it
 
 
 def still_image(path):
@@ -452,7 +453,8 @@ class App:
 
         A message that starts with a card ID ("T435 B") answers that card. Otherwise a message
         answers an escalation when it quotes it; an unquoted one answers the escalation sent just
-        before it, or else the only escalation open when it was sent. With several open, Toucan asks
+        before it, or else the only escalation still waiting for an answer when it was sent (one
+        answered in the last 10 minutes still takes follow-ups). With several open, Toucan asks
         once which card it is for. "more" (quoted, or "more T435") sends the card's full detail.
         A bare letter answers with that option spelled out. Unquoted forwards and caption-less
         documents never answer. When that chat is also a route, only card IDs, quotes and the
@@ -552,6 +554,7 @@ class App:
             else:
                 live = {w['id'] for w in sent if (actor == owner or w['delegate_jid'] == actor) and w['sent_at'] <= row['ts'] and (w['closed_at'] is None or w['closed_at'] > row['ts'])}
                 live |= {w['id'] for w in carded if (actor == owner or w['delegate_jid'] == actor) and w['sent_at'] <= row['ts']}
+                live = {i for i in live if self.awaiting_answer(i, row['ts'])}
                 target = by_id.get(last_out) or (eligible.get(next(iter(live))) if len(live) == 1 else None)
                 if not target and len(live) > 1:
                     ids = ', '.join(self.card_label(i) for i in sorted(live))
@@ -617,6 +620,20 @@ class App:
     def open_card(self, req):
         return self.db.execute(f'SELECT c.*,{cards.SEQ} FROM cards c WHERE c.request_id=? AND c.closed_at IS NULL '
                                'ORDER BY c.id DESC LIMIT 1', (req,)).fetchone()
+
+    def awaiting_answer(self, req, ts):
+        """Whether an unquoted owner message sent at ts can still answer this request's card.
+
+        An answered card stays open until the thread closes the request, which can take days. Without
+        this, any later unrelated message ("Ping", a number) was handed to that card's thread. A card
+        answered in the last 10 minutes still takes follow-ups; older ones need the card ID or a quote."""
+        card = self.db.execute('SELECT closed_at,answered_at FROM cards WHERE request_id=? ORDER BY id DESC LIMIT 1',
+                               (req,)).fetchone()
+        if not card:
+            return True  # escalated before cards existed
+        if card['closed_at'] is not None and card['closed_at'] <= ts:
+            return False
+        return card['answered_at'] is None or card['answered_at'] > ts - ANSWER_FOLLOWUP_SECONDS
 
     def card_label(self, req):
         """The ID of the request's open card: T435, or T435-2 once a second card replaced the first."""
