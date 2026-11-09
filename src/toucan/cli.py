@@ -50,10 +50,10 @@ def parser():
             sub.add_argument('--title')
         if name in ('inbox', 'claim', 'wait', 'resume', 'send', 'rotate', 'forward', 'bounce'):
             sub.add_argument('--thread', required=True)
-        if name == 'inbox':
-            sub.add_argument('--rules', action='store_true', help='print the standing rules in full even if unchanged')
         elif name in ('release', 'done', 'reply', 'react', 'close', 'escalate', 'log'):
             sub.add_argument('--thread')
+        if name == 'inbox':
+            sub.add_argument('--rules', action='store_true', help='print the standing rules in full even if unchanged')
         if name == 'claim':
             sub.add_argument('requests', type=int, nargs='+')
         elif name == 'resume':
