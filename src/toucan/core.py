@@ -28,6 +28,8 @@ DOWNLOAD_FIELDS = ('local_path', 'download_status', 'http_status', 'download_err
 
 # `@[person]` in a reply; the Teams bot posts a mention, other transports get the name.
 TAG = re.compile(r'@\[([^\[\]]*)\]')
+PING = re.compile(r'\s*ping[\s.!?]*', re.I)
+PING_WINDOW = 600  # a ping older than this when first seen gets no pong
 
 
 def still_image(path):
@@ -242,6 +244,10 @@ class App:
             # Before the routes: when the owner's own chat is a route, an answer must not also become a request.
             if mapping is not None and PHONE.fullmatch(self.settings['owner_whatsapp']):
                 try:
+                    report['pings'] = self.owner_ping(mapping, now)
+                except (OSError, KeyError, sqlite3.Error):
+                    problems['health:owner_ping'] = 'Owner WhatsApp chat unavailable; ping not answered'
+                try:
                     report['answers'] = self.owner_answers(mapping, now, problems)
                 except (OSError, KeyError, sqlite3.Error):
                     problems['health:owner_chat'] = 'Owner WhatsApp chat unavailable; escalation answers not read'
@@ -414,6 +420,32 @@ class App:
             except Exception as error:
                 report['problems']['router:wake'] = f'Router: waking routed requests failed ({type(error).__name__}); the next sync wakes them'
         return report
+
+    def owner_ping(self, mapping, now):
+        """The owner sends "ping" to the assistant number and gets "pong" back, once per message.
+
+        Runs before owner_answers and the routes, and marks the message as a card command, so a
+        ping never answers a card or becomes a request. Pings older than PING_WINDOW are ignored."""
+        owner = self.settings['owner_whatsapp']
+        answered = []
+        for row in sources.owner_chat(self.paths, self.owner_chats(mapping), now - PING_WINDOW):
+            if row['from_me'] or mapping.get(row['sender_jid'], row['sender_jid']) != owner:
+                continue
+            if row.get('is_forwarded') or row.get('revoked') or not PING.fullmatch(row['text'] or ''):
+                continue
+            consumed = 'card-command:' + row['chat_jid'] + ':' + row['msg_id']
+            if self.db.execute('SELECT 1 FROM meta WHERE key=?', (consumed,)).fetchone() or self.db.execute(
+                    "SELECT 1 FROM messages WHERE source='whatsapp' AND account=? AND chat=? AND msg_id=?",
+                    (self.paths.wa_account, row['chat_jid'], row['msg_id'])).fetchone():
+                continue  # already ponged, or already taken as a card answer or request
+            insert(self.db, 'meta', key=consumed, value=str(now))
+            open_requests = self.db.execute(f'SELECT count(*) FROM requests WHERE state IN {OPEN}').fetchone()[0]
+            waiting = self.db.execute("SELECT count(*) FROM cards c JOIN requests r ON r.id=c.request_id "
+                                      "WHERE c.closed_at IS NULL AND r.state!='closed'").fetchone()[0]
+            self.notice_once(row['msg_id'], f'pong {self.local(now)}. {open_requests} open requests, '
+                                            f'{waiting} card{"" if waiting == 1 else "s"} waiting on you.')
+            answered.append(row['msg_id'])
+        return answered
 
     def owner_answers(self, mapping, now, problems):
         """Hand escalated requests back to their thread when the owner answers on WhatsApp.
