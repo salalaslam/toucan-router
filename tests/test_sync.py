@@ -208,6 +208,29 @@ def test_requests_move_to_the_fallback_thread_while_the_owner_is_rate_limited(wo
     assert world.sends[-1][5] == PHONE and world.app.get(req)['state'] == 'closed'
 
 
+def test_a_request_the_fallback_hands_back_stays_with_the_rate_limited_owner(world):
+    backup_hook = world.root / 'backup.hook'
+    backup_hook.write_text('https://hook.invalid/api/hooks/backup/BACKUP')
+    backup_hook.chmod(0o600)
+    world.config_path.write_text(world.config_text.replace('[threads.project-a]\n', '[threads.project-a]\nfallback = "backup"\n') +
+                                 f'\n[threads.backup]\nt3_thread = "backup-thread"\nhook_file = "{backup_hook}"\n')
+    world.app = App(load(world.config_path), world.db, world.fx, world.paths)
+    world.seed()
+    world.t3('error', world.now, LIMIT, role='assistant')
+    req = world.request()
+    world.advance(5 * 60)
+    world.app.sync()
+    claim = world.app.claim([req], 'backup')
+    world.app.deliver(req, claim, text='Queued for the project thread', keep_open=True)
+    world.app.forward(req, 'project-a', 'backup', reason='reply only', claim=claim)
+    for _ in range(3):
+        world.advance(15 * 60)
+        world.app.sync()
+    row = world.app.get(req)
+    assert (row['thread'], row['state']) == ('project-a', 'new')
+    assert [h['thread'] for h in world.hooks()].count('backup') == 1
+
+
 def test_request_not_picked_up_within_ack_window_alerts_owner(world):
     world.seed()
     req = world.request()

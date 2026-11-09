@@ -751,7 +751,7 @@ class App:
 
     def rate_limits(self, problems, now):
         """Threads whose last turn ended on a model rate limit, and when. Their unclaimed requests
-        move to the thread's fallback once it has been stuck for fallback_minutes."""
+        move to the thread's fallback once it has been stuck for fallback_minutes, at most once each."""
         limited = {}
         for key, thread in self.cfg['threads'].items():
             try:
@@ -767,7 +767,10 @@ class App:
             backup = self.cfg['threads'][key].get('fallback')
             if not backup or backup in limited:
                 continue
-            for req in self.rows("SELECT id,created_at FROM requests WHERE thread=? AND state='new' AND routing IS NULL", (key,)):
+            # A request goes to the fallback once. One the fallback handed back waits for this thread.
+            for req in self.rows("SELECT id,created_at FROM requests r WHERE thread=? AND state='new' AND routing IS NULL "
+                                 "AND NOT EXISTS (SELECT 1 FROM events e WHERE e.request_id=r.id AND e.kind='handed_over')",
+                                 (key,)):
                 if now - max(req['created_at'], stopped) >= self.settings['fallback_minutes'] * 60:
                     self.db.execute('UPDATE requests SET thread=?,wakes=0,last_wake_at=NULL WHERE id=?', (backup, req['id']))
                     self.record('handed_over', backup, req['id'], from_thread=key)
