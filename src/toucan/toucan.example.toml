@@ -19,6 +19,7 @@ fallback_minutes = 5
 rotate_tokens = 200000       # ask idle owner threads to hand over at this context size
 rotate_stall_minutes = 60    # alert if a handover has not finished by then
 # transcribe = "chatgpt-transcribe"   # voice notes become text before they reach a thread
+# thread_rules = """Standing rules printed to every owner thread with each inbox."""
 
 [people.alice]
 name = "Alice Example"
@@ -53,6 +54,13 @@ thread = "project-a"
 mode = "act"
 requesters = ["alice"]
 active_from = "2026-10-17T00:00:00+00:00"
+
+# [projects.project-a]
+# name = "Project A"
+# thread = "project-a"
+# rules = """
+# Rules printed to project-a's owner thread with each inbox, such as who reviews designs before release.
+# """
 
 # The owner's own 1:1 with the assistant number: their messages there become requests.
 # [people.owner]
