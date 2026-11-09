@@ -93,7 +93,8 @@ The request stays open with no claim. Answer on WhatsApp in any of these ways:
 
 - `T43 B` (or `T43 B, but tell Alice first`) answers card T43 from anywhere in the chat. A bare
   letter reaches the thread spelled out, as `B) Wait for PR 110`.
-- Quote the card. An unquoted reply answers the card sent just before it, or the only open one.
+- Quote the card. An unquoted reply answers the card sent just before it, or the only open one that
+  hasn't been answered (a card answered in the last 10 minutes still takes follow-ups).
   With several open, Toucan asks once, in one line, which card it is for.
 - `more`, quoting the card, or `more T43`, sends the thread's full note and the requester's
   message. Quoting that detail message answers the card too.
