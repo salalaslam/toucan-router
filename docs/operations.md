@@ -127,7 +127,8 @@ latest message is a model rate-limit error from the latest run, the turn has end
 will restart it. A newer running or finished run clears the state. Toucan alerts once,
 then wakes the thread every `rewake_minutes` so it carries on when the limit clears. If the
 thread has `fallback = "OTHER"`, its unclaimed requests move to that thread after
-`fallback_minutes`, unless the fallback is rate-limited too.
+`fallback_minutes`, unless the fallback is rate-limited too. A request is handed over once: if
+the fallback forwards it back, it stays with the owner thread until that thread picks it up.
 
 ## Forwarding a request
 
