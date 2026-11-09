@@ -326,3 +326,27 @@ def test_rules_must_be_text(world, extra, error):
     world.config_path.write_text(text)
     with pytest.raises(ValidationError, match=error):
         load(world.config_path)
+
+
+def test_inbox_prints_rules_in_full_only_when_new_changed_or_stale(world, monkeypatch, capsys):
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    monkeypatch.setenv('TOUCAN_DB', str(world.db_path))
+    world.config_path.write_text(world.config_text.replace('owner_name = "Example Owner"',
+                                                           'owner_name = "Example Owner"\nthread_rules = "Rule one."'))
+    world.seed()
+
+    def inbox(*extra):
+        assert main(['inbox', '--thread', 'project-a', *extra], effects=world.fx, paths=world.paths) == 0
+        return capsys.readouterr().out
+    assert 'Rule one.' in inbox()
+    again = inbox()
+    assert 'Rule one.' not in again and 'toucan inbox --thread project-a --rules' in again
+    assert 'Rule one.' in inbox('--rules')
+    world.config_path.write_text(world.config_text.replace('owner_name = "Example Owner"',
+                                                           'owner_name = "Example Owner"\nthread_rules = "Rule two."'))
+    assert 'Rule two.' in inbox()
+    assert 'Rule two.' not in inbox()
+    world.now += 25 * 3600
+    assert 'Rule two.' in inbox()
+    monkeypatch.setattr('toucan.sources.hook_file_thread', lambda paths, hook: 'successor-thread')
+    assert 'Rule two.' in inbox()

@@ -1,4 +1,5 @@
 """Request lifecycle and delivery. Every network or process effect is injectable."""
+import hashlib
 import json
 import re
 import shlex
@@ -702,6 +703,22 @@ class App:
             if req and result.get('external_id'):
                 with self.transaction():
                     self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('quote:' + result['external_id'], str(req)))
+
+    def rules_due(self, thread, rules):
+        """Whether inbox should print the standing rules in full: they are new to this T3 thread (a rotated
+        successor counts as new), they changed, or the thread last saw them over context_hours ago.
+        Printing them on every wake would fill a long-running owner thread's context."""
+        digest = hashlib.sha256('\n\n'.join(rules).encode()).hexdigest()
+        live, now = self.live_thread(thread), self.fx.now()
+        row = self.db.execute('SELECT value FROM meta WHERE key=?', ('rules:' + thread,)).fetchone()
+        seen = json.loads(row['value']) if row else {}
+        if (seen.get('digest') == digest and seen.get('t3_thread') == live
+                and now - seen.get('at', 0) < self.settings['context_hours'] * 3600):
+            return False
+        with self.transaction():
+            self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',
+                            ('rules:' + thread, json.dumps(dict(digest=digest, t3_thread=live, at=now))))
+        return True
 
     def pending(self, thread):
         return self.rows("SELECT r.*,m.ts FROM requests r JOIN messages m ON m.id=r.message_id "

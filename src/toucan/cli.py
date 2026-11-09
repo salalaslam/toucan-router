@@ -50,6 +50,8 @@ def parser():
             sub.add_argument('--title')
         if name in ('inbox', 'claim', 'wait', 'resume', 'send', 'rotate', 'forward', 'bounce'):
             sub.add_argument('--thread', required=True)
+        if name == 'inbox':
+            sub.add_argument('--rules', action='store_true', help='print the standing rules in full even if unchanged')
         elif name in ('release', 'done', 'reply', 'react', 'close', 'escalate', 'log'):
             sub.add_argument('--thread')
         if name == 'claim':
@@ -274,8 +276,10 @@ def dispatch(args, app):
         if args.json:
             return dict(next_steps=commands, accuracy=ACCURACY, rules=rules, waiter_running=waiting, untrusted_messages=messages)
         blocks = [commands, ACCURACY]
-        if rules:
+        if rules and (args.rules or app.rules_due(args.thread, rules)):
             blocks.append('Standing rules for this thread, from the owner\'s config:\n\n' + '\n\n'.join(rules))
+        elif rules:
+            blocks.append(f'Standing rules unchanged since you last saw them; `toucan inbox --thread {args.thread} --rules` prints them again.')
         if not waiting:
             blocks.append(f'No `toucan wait --thread {args.thread}` is running. Start it now as a background command '
                           '(it exits when a new request arrives, even mid-task), and start it again each time it exits.')
