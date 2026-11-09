@@ -15,7 +15,7 @@ DEFAULTS = dict(rewake_minutes=15, wake_gap_minutes=2, max_wakes=3, claimed_stal
                 rotate_stall_minutes=60, owner_whatsapp='', drafts_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
                 alert_url_file='', upload_command='toucan-upload-loom', transcribe='', followup_minutes=120,
                 router_general_thread='', router_commands=(), router_timeout_seconds=60, router_history=20,
-                router_budget_seconds=90, router_hold_minutes=5, router_ask_minutes=15, max_bounces=2)
+                router_budget_seconds=90, router_hold_minutes=5, router_ask_minutes=15, max_bounces=2, thread_rules='')
 ROUTER_MODES = ('off', 'shadow', 'live')
 ROUTER_BUDGET_MAX = 180  # seconds; keeps a sync well inside the timer unit's 5-minute timeout
 PHONE = re.compile(r'^\d+@s\.whatsapp\.net$')
@@ -24,7 +24,7 @@ GROUP = re.compile(r'^\d+(-\d+)?@g\.us$')
 # Keys toucan reads (active_ts is added by load). Anything else is likely a typo that would do nothing.
 KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email'},
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens'},
-            projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes'},
+            projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes', 'rules'},
             routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
                     'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'active_ts'},
             sources={'whatsapp': {'store', 'account', 'service_unit'},
@@ -34,7 +34,7 @@ SOURCE_DEFAULTS = dict(whatsapp=dict(store='~/.local/state/wacli', account='wa',
                        teams=dict(bot_db='~/.local/state/toucan-bot/bot.db', stale_minutes=5, service_unit=''),
                        email=dict(notmuch_config='', stale_minutes=60))
 TEXT_SETTINGS = {'owner_whatsapp', 'drafts_whatsapp', 'owner_teams_id', 'owner_name', 'timezone', 'alert_url', 'alert_url_file', 'upload_command', 'transcribe', 'ntfy',
-                 'router_general_thread'}
+                 'router_general_thread', 'thread_rules'}
 LIST_SETTINGS = {'router_commands'}
 
 
@@ -192,6 +192,8 @@ def validate(cfg):
         aliases = project.get('aliases', [])
         if not isinstance(aliases, list) or any(not isinstance(a, str) or not re.search(r'\w', a) for a in aliases):
             raise ValidationError(f'project {key}: aliases must be a list of words or names')
+        if not isinstance(project.get('rules', ''), str):
+            raise ValidationError(f'project {key}: rules must be text')
         description = project.get('description', '')
         if not isinstance(description, str) or '\n' in description or '\r' in description:
             raise ValidationError(f'project {key}: description must be one line of text')

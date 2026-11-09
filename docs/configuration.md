@@ -34,6 +34,7 @@ Secrets never go in this file. Webhook URLs live in hook files and the alert URL
 | `claimed_stale_hours` | 4 | Alert when a claimed request has no reply or promise after this long. |
 | `done_unclosed_minutes` | 30 | Alert when a request marked done still has no reply. |
 | `whatsapp_stale_minutes` | 120 | The WhatsApp store counts as stale after this long. wacli writes only when messages arrive, so raise it on quiet numbers. |
+| `thread_rules` | none | Standing rules printed to every owner thread with each `toucan inbox`, after the accuracy rule. Use a `"""` multi-line string for several paragraphs. |
 | `context_hours` | 24 | How much earlier chat history the inbox shows as context. |
 | `fallback_minutes` | 5 | Hand a rate-limited thread's unclaimed request to its fallback after this long. |
 | `rotate_tokens` | 200000 | Ask an idle owner thread to hand over to a fresh thread at this context size. |
@@ -143,6 +144,7 @@ One table per project the router can pick. `KEY` is how the router names it. See
 | `aliases` | no | Other names people use for it, such as a repo or product name. |
 | `description` | no | One line the router's AI step reads. |
 | `thread` | yes | Owner thread key that handles the project. |
+| `rules` | no | Standing rules for this project, printed with each `toucan inbox` to the owner thread that handles it, after `settings.thread_rules`. Multi-line text is fine. |
 
 The key, the name and each alias match whole words in a message, in any case, so `portal`
 doesn't match `portals`. Two projects may not share a name or alias. `toucan remove thread`

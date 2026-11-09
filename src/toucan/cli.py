@@ -23,6 +23,13 @@ ACCURACY = ('Accuracy before speed. State something as fact only if you checked 
             'checked or marked as not confirmed.')
 
 
+def thread_rules(cfg, thread):
+    """The owner's standing rules for a thread: settings.thread_rules, then each owned project's rules."""
+    texts = [cfg['settings']['thread_rules']]
+    texts += [p.get('rules', '') for p in cfg['projects'].values() if p['thread'] == thread]
+    return [t.strip() for t in texts if t.strip()]
+
+
 def parser():
     p = argparse.ArgumentParser(prog='toucan')
     commands = p.add_subparsers(dest='command', required=True)
@@ -263,9 +270,12 @@ def dispatch(args, app):
         if any(router.is_live(r) for r in app.cfg['routes']):
             commands += f'; not yours: toucan bounce REQ --thread {args.thread} [--claim ID] --reason TEXT'
         waiting = app.waiter_running(args.thread)
+        rules = thread_rules(app.cfg, args.thread)
         if args.json:
-            return dict(next_steps=commands, accuracy=ACCURACY, waiter_running=waiting, untrusted_messages=messages)
+            return dict(next_steps=commands, accuracy=ACCURACY, rules=rules, waiter_running=waiting, untrusted_messages=messages)
         blocks = [commands, ACCURACY]
+        if rules:
+            blocks.append('Standing rules for this thread, from the owner\'s config:\n\n' + '\n\n'.join(rules))
         if not waiting:
             blocks.append(f'No `toucan wait --thread {args.thread}` is running. Start it now as a background command '
                           '(it exits when a new request arrives, even mid-task), and start it again each time it exits.')

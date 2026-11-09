@@ -283,3 +283,46 @@ def test_wait_returns_when_a_request_arrives_mid_wait(world, monkeypatch, capsys
     capsys.readouterr()
     assert invoke(['wait', '--thread', 'project-a', '--timeout', '1', '--json']) == 0
     assert json.loads(capsys.readouterr().out)['fired'] is False  # seen in the inbox: no repeat
+
+
+def test_inbox_prints_standing_rules_for_the_thread(world, monkeypatch, capsys):
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    monkeypatch.setenv('TOUCAN_DB', str(world.db_path))
+    text = world.config_text.replace('owner_name = "Example Owner"',
+                                     'owner_name = "Example Owner"\nthread_rules = "Every thread: track code changes as issues."')
+    text += ('\n[threads.project-b]\nhook_file = "' + str(world.hook) + '"\n'
+             '\n[projects.alpha]\nname = "Alpha"\nthread = "project-a"\nrules = """\nAlpha: designs go to the lead first.\n"""\n'
+             '\n[projects.beta]\nname = "Beta"\nthread = "project-b"\nrules = "Beta only."\n')
+    world.config_path.write_text(text)
+    world.seed()
+    invoke = lambda argv: main(argv, effects=world.fx, paths=world.paths)
+    assert invoke(['inbox', '--thread', 'project-a']) == 0
+    out = capsys.readouterr().out
+    assert 'Every thread: track code changes as issues.\n\nAlpha: designs go to the lead first.' in out
+    assert 'Beta only.' not in out
+    assert out.index('Accuracy before speed') < out.index('Every thread:')
+    assert invoke(['inbox', '--thread', 'project-b', '--json']) == 0
+    assert json.loads(capsys.readouterr().out)['rules'] == ['Every thread: track code changes as issues.', 'Beta only.']
+
+
+def test_inbox_without_rules_adds_nothing(world, monkeypatch, capsys):
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    monkeypatch.setenv('TOUCAN_DB', str(world.db_path))
+    world.seed()
+    assert main(['inbox', '--thread', 'project-a', '--json'], effects=world.fx, paths=world.paths) == 0
+    assert json.loads(capsys.readouterr().out)['rules'] == []
+    assert main(['inbox', '--thread', 'project-a'], effects=world.fx, paths=world.paths) == 0
+    assert 'Standing rules' not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('extra,error', [
+    ('[projects.alpha]\nname = "Alpha"\nthread = "project-a"\nrules = ["not", "text"]\n', 'rules must be text'),
+    ('', 'thread_rules must be text'),
+])
+def test_rules_must_be_text(world, extra, error):
+    text = world.config_text + '\n' + extra
+    if not extra:
+        text = text.replace('owner_name = "Example Owner"', 'owner_name = "Example Owner"\nthread_rules = 3')
+    world.config_path.write_text(text)
+    with pytest.raises(ValidationError, match=error):
+        load(world.config_path)
