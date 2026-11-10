@@ -2,8 +2,10 @@
 import json
 import re
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import timestamp
 from .storage import readonly
@@ -143,8 +145,56 @@ LIMITED = re.compile(r"(Agent terminated early due to an API error: )?API Error:
 LIMIT_CODES = ('usageLimitExceeded', 'serverOverloaded', 'api_error_429', 'api_error_529')
 
 
+# When the limit ends, as providers word it. Codex: "try again at Nov 11th, 2026 8:52 PM" (local time);
+# the proxy: "(reset after 2h12m20s)"; Claude Code: "resets 6:20am (UTC)".
+TRY_AGAIN_AT = re.compile(r'try again at (?:([A-Z][a-z]{2})[a-z]* (\d{1,2})(?:st|nd|rd|th)?,? (\d{4}),? )?(\d{1,2}):(\d{2}) ?([AP]M)', re.I)
+RESET_AFTER = re.compile(r'reset after (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?')
+RESETS_AT = re.compile(r'resets (\d{1,2})(?::(\d{2}))? ?([ap]m) \(([^)]+)\)', re.I)
+MONTHS = ('jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec')
+
+
+def limit_reset(text, stopped, zone='UTC'):
+    """When a rate-limit message says the limit ends, as a timestamp; None when it doesn't say.
+
+    A time without a date is its next occurrence after the limit was hit. Codex writes local time,
+    which is the router's timezone. Anything in the past or more than eight days out is ignored."""
+    text = text or ''
+    try:
+        if m := TRY_AGAIN_AT.search(text):
+            month, day, year, hour, minute, half = m.groups()
+            when = _clock(stopped, ZoneInfo(zone), int(hour) % 12 + (12 if half.upper() == 'PM' else 0), int(minute))
+            if month:
+                when = when.replace(year=int(year), month=MONTHS.index(month.lower()) + 1, day=int(day))
+        elif (m := RESET_AFTER.search(text)) and any(m.groups()):
+            hours, minutes, seconds = (int(g or 0) for g in m.groups())
+            when = datetime.fromtimestamp(stopped + hours * 3600 + minutes * 60 + seconds)
+        elif m := RESETS_AT.search(text):
+            hour, minute, half, name = m.groups()
+            when = _clock(stopped, ZoneInfo(name.strip()), int(hour) % 12 + (12 if half.lower() == 'pm' else 0), int(minute or 0))
+        else:
+            return None
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
+    until = when.timestamp()
+    return until if stopped < until <= stopped + 8 * 86400 else None
+
+
+def _clock(after, zone, hour, minute):
+    """The first time of day hour:minute in zone after the timestamp `after`."""
+    start = datetime.fromtimestamp(after, zone)
+    when = start.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return when + timedelta(days=1) if when.timestamp() <= after else when
+
+
 def rate_limited(paths, thread_id):
-    """When the thread's last turn stopped at a model rate limit, when that was; otherwise None.
+    """When the thread's last turn stopped at a model rate limit, when that was; otherwise None."""
+    limit = rate_limit(paths, thread_id)
+    return limit and limit[0]
+
+
+def rate_limit(paths, thread_id, zone='UTC'):
+    """(stopped, until) when the thread's last turn stopped at a model rate limit; otherwise None.
+    `until` is when the provider said the limit ends, or None when it didn't say.
 
     The latest run decides first: a failed run can end without any chat message (Codex at its
     usage limit, for one), and a newer running or finished run means an older limit message is
@@ -175,14 +225,16 @@ def rate_limited(paths, thread_id):
         if latest:
             if failure and latest['completed_at'] and (failure['class'] == 'usage_limit' or failure['code'] in LIMIT_CODES
                                                         or LIMITED.match(failure['message'] or '')):
-                return timestamp(latest['completed_at'])
+                stopped = timestamp(latest['completed_at'])
+                return stopped, limit_reset(failure['message'], stopped, zone)
             if not row or latest['status'] not in FINISHED:
                 return None  # a turn is running
             if (row['run_id'] != latest['run_id'] if row['run_id'] else
                     not latest['requested_at'] or timestamp(row['created_at']) < timestamp(latest['requested_at'])):
                 return None  # the message belongs to an older turn
         if row and row['role'] == 'assistant' and LIMITED.match(row['text'] or ''):
-            return timestamp(row['created_at'])
+            stopped = timestamp(row['created_at'])
+            return stopped, limit_reset(row['text'], stopped, zone)
         return None
     except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, AttributeError):
         return None
