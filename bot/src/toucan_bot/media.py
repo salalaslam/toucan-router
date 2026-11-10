@@ -70,15 +70,21 @@ def download_url(url, source, key):
     host = parts.hostname or ''
     if source != 'live' or not (host == 'smba.trafficmanager.net' or host.endswith('.asm.skype.com')):
         raise ValueError('unsupported image host')
-    # Connector service URLs may carry a regional routing segment. Preserve it,
-    # validating it before HTTPX can normalize any literal or encoded traversal.
+    # Connector service URLs may carry a regional routing segment, optionally
+    # followed by the tenant ID. Preserve both, validating them before HTTPX can
+    # normalize any literal or encoded traversal.
     route = segments[1:]
     prefix = []
-    if len(route) == 6:
+    if len(route) in (6, 7):
         region = identifier(route.pop(0))
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', region):
             raise ValueError('unsupported image service prefix')
         prefix = [region]
+        if len(route) == 6:
+            tenant = identifier(route.pop(0))
+            if not re.fullmatch(r'[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', tenant):
+                raise ValueError('unsupported image service tenant')
+            prefix.append(tenant)
     if (len(route) == 5 and route[:2] in (['v3', 'attachments'], ['v1', 'objects']) and route[3] == 'views'
             and (not prefix or route[:2] == ['v3', 'attachments'])):
         attachment, view = identifier(route[2]), identifier(route[4])
