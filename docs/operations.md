@@ -126,10 +126,15 @@ Each sync reads the latest run and message of every owner thread from T3. When t
 run failed at a usage or rate limit (Codex records this without writing a message), or the
 latest message is a model rate-limit error from the latest run, the turn has ended and nothing
 will restart it. A newer running or finished run clears the state. Toucan alerts once,
-then wakes the thread every `rewake_minutes` so it carries on when the limit clears. If the
-thread has `fallback = "OTHER"`, its unclaimed requests move to that thread after
-`fallback_minutes`, unless the fallback is rate-limited too. A request is handed over once: if
-the fallback forwards it back, it stays with the owner thread until that thread picks it up.
+then wakes the thread every `rewake_minutes` so it carries on when the limit clears. When the
+error says when the limit ends (Codex's "try again at Nov 11th, 2026 8:52 PM", read in
+`timezone`; the proxy's "reset after 2h12m20s"; Claude Code's "resets 7pm (UTC)"), those wakes
+wait until then, since earlier ones fail at once. If the thread has `fallback = "OTHER"`, its
+unclaimed requests move to that thread after `fallback_minutes`, unless the fallback is
+rate-limited too. A request is handed over once: if the fallback forwards it back, it stays
+with the owner thread until that thread picks it up. If the fallback hits a limit before it
+claims a handed-over request, the request goes back to its owner as soon as the owner is no
+longer limited.
 
 ## Forwarding a request
 

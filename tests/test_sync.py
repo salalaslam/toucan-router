@@ -4,7 +4,8 @@ import sqlite3
 
 import pytest
 
-from toucan.config import load
+from toucan import t3
+from toucan.config import load, timestamp
 from toucan.core import App
 from toucan.storage import connect
 from conftest import LID, PHONE
@@ -842,6 +843,60 @@ def test_codex_usage_limit_is_detected_from_failed_runs_and_curly_apostrophes(wo
     with sqlite3.connect(world.paths.t3) as db:
         db.execute("UPDATE orchestration_v2_projection_runs SET status='completed' WHERE ordinal=2")
     assert 'limited:project-a' not in world.app.sync()['problems']
+
+
+def test_a_limit_with_a_reset_time_is_not_woken_until_it_ends(world):
+    world.seed()  # world.now is 07:00 UTC, the router's timezone here
+    world.t3('wake', world.now, 'Toucan woke you', run=1)
+    world.t3_run(1, 'failed', world.now, dict(CODEX_LIMIT, message=CODEX_LIMIT['message'].replace(
+        'credits.', 'credits or try again at Oct 17th, 2026 10:00 AM.')))
+    req = world.request()
+    assert 'after the limit ends at 2026-10-17 10:00' in world.alerts()[0]['text']
+    for _ in range(11):
+        world.advance(15 * 60)
+        world.app.sync()
+    assert world.hooks() == [] and world.app.get(req)['wakes'] == 0
+    world.advance(15 * 60)  # 10:00
+    world.app.sync()
+    assert [(h['count'], 'carry on' in h['summary']) for h in world.hooks()] == [(1, True)]
+
+
+@pytest.mark.parametrize('text, zone, ends', [
+    ('You’ve hit your usage limit. … or try again at Nov 11th, 2026 8:52 PM.', 'Asia/Tokyo', '2026-11-11T20:52:00+09:00'),
+    ('You’ve hit your usage limit. … or try again at 3:05 PM.', 'Asia/Tokyo', '2026-11-11T15:05:00+09:00'),
+    ('API Error: Request rejected (429) · cooling down (rate_limit_error) (reset after 2h12m20s)', 'UTC', '2026-11-10T18:13:16+09:00'),
+    ("You've hit your session limit · resets 6:20am (UTC)", 'Asia/Tokyo', '2026-11-11T06:20:00Z'),
+    ('Claude API rate limit reached. Try again later.', 'UTC', None),
+    ('You’ve hit your usage limit. … try again at Nov 30th, 2026 8:52 PM.', 'Asia/Tokyo', None),  # beyond eight days
+])
+def test_the_reset_time_is_read_from_each_providers_limit_message(text, zone, ends):
+    stopped = timestamp('2026-11-10T16:00:56+09:00')
+    assert t3.limit_reset(text, stopped, zone) == (ends and timestamp(ends))
+
+
+def test_a_request_goes_back_to_its_owner_when_the_fallback_hits_a_limit_too(world):
+    backup_hook = world.root / 'backup.hook'
+    backup_hook.write_text('https://hook.invalid/api/hooks/backup/BACKUP')
+    backup_hook.chmod(0o600)
+    world.config_path.write_text(world.config_text.replace('[threads.project-a]\n', '[threads.project-a]\nfallback = "backup"\n') +
+                                 f'\n[threads.backup]\nt3_thread = "backup-thread"\nhook_file = "{backup_hook}"\n')
+    world.app = App(load(world.config_path), world.db, world.fx, world.paths)
+    world.seed()
+    world.t3_run(1, 'failed', world.now, CODEX_LIMIT)
+    req = world.request()
+    world.advance(5 * 60)
+    world.app.sync()
+    assert world.app.get(req)['thread'] == 'backup'
+    world.t3_run(1, 'failed', world.now, CODEX_LIMIT, thread='backup-thread')  # the fallback runs out as well
+    world.advance(60)
+    world.app.sync()
+    assert world.app.get(req)['thread'] == 'backup'  # the owner is still limited
+    world.t3_run(2, 'running', world.now)  # the owner works again
+    world.advance(60)
+    world.app.sync()
+    row = world.app.get(req)
+    assert (row['thread'], row['state'], row['wakes']) == ('project-a', 'new', 1)  # handed back and woken in one sync
+    assert world.hooks()[-1]['thread'] == 'project-a' and world.hooks()[-1]['count'] == 1
 
 
 def test_failed_runs_for_other_reasons_are_not_rate_limits(world):

@@ -57,6 +57,7 @@ class App:
         self.settings = cfg['settings']
         self.local = lambda ts: local(ts, self.settings['timezone'])
         self.queued = []  # owner notices queued inside a sync transaction, sent after it commits
+        self.limit_until = {}  # thread key -> when its provider said the rate limit ends, from the last sync
 
     @contextmanager
     def transaction(self):
@@ -768,18 +769,32 @@ class App:
 
     def rate_limits(self, problems, now):
         """Threads whose last turn ended on a model rate limit, and when. Their unclaimed requests
-        move to the thread's fallback once it has been stuck for fallback_minutes, at most once each."""
-        limited = {}
+        move to the thread's fallback once it has been stuck for fallback_minutes, at most once each.
+        A request handed to a fallback that is itself limited goes back to its owner once the owner can work."""
+        limited, until = {}, {}
         for key, thread in self.cfg['threads'].items():
             try:
-                stopped = sources.rate_limited(self.paths, self.live_thread(key))
+                limit = sources.rate_limit(self.paths, self.live_thread(key), self.settings['timezone'])
             except (OSError, sqlite3.Error, ValueError):
                 problems['health:t3'] = 'T3 history unavailable; rate-limited threads are not detected'
                 continue
-            if stopped:
-                limited[key] = stopped
-                problems['limited:' + key] = (f'{key}: last turn stopped at a model rate limit at {self.local(stopped)}; '
-                                              'Toucan keeps waking it')
+            if limit:
+                limited[key], until[key] = limit
+                then = (f'Toucan wakes it after the limit ends at {self.local(until[key])}' if until[key] and until[key] > now
+                        else 'Toucan keeps waking it')
+                problems['limited:' + key] = f'{key}: last turn stopped at a model rate limit at {self.local(limited[key])}; {then}'
+        self.limit_until = until
+        for key in limited:
+            for req in self.rows("SELECT id FROM requests WHERE thread=? AND state='new' AND routing IS NULL", (key,)):
+                moved = self.db.execute("SELECT kind,thread,detail_json FROM events WHERE request_id=? "
+                                        "AND kind IN ('handed_over','handed_back','forwarded') ORDER BY id DESC LIMIT 1",
+                                        (req['id'],)).fetchone()
+                if not moved or moved['kind'] != 'handed_over' or moved['thread'] != key:
+                    continue
+                owner = json.loads(moved['detail_json'] or '{}').get('from_thread')
+                if owner in self.cfg['threads'] and owner not in limited:
+                    self.db.execute('UPDATE requests SET thread=?,wakes=0,last_wake_at=NULL WHERE id=?', (owner, req['id']))
+                    self.record('handed_back', owner, req['id'], from_thread=key)
         for key, stopped in limited.items():
             backup = self.cfg['threads'][key].get('fallback')
             if not backup or backup in limited:
@@ -809,8 +824,11 @@ class App:
             gap = self.settings['wake_gap_minutes'] * 60 if fresh else rewake
             if since_last is not None and since_last < gap:
                 eligible = []  # batch bursts; a first wake waits at most wake_gap_minutes
-            # A turn that ended on a rate limit needs a wake to carry on, with or without requests.
-            resume = bool(stopped) and now - stopped >= rewake and (since_last is None or since_last >= rewake)
+            # A turn that ended on a rate limit needs a wake to carry on, with or without requests,
+            # but not before the provider said the limit ends: those wakes fail at once.
+            ends = self.limit_until.get(key) if stopped else None
+            resume = (bool(stopped) and now - stopped >= rewake and (since_last is None or since_last >= rewake)
+                      and not (ends and now < ends))
             if stopped and not resume:
                 eligible = []
             if eligible or resume:

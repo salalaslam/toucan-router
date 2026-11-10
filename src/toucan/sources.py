@@ -13,7 +13,7 @@ from email.parser import BytesHeaderParser
 
 from .config import timestamp
 from .storage import readonly
-from .t3 import hook_info, hook_thread, hook_file_thread, owner_said, rate_limited, thread_usage
+from .t3 import hook_info, hook_thread, hook_file_thread, owner_said, rate_limit, rate_limited, thread_usage
 
 
 @dataclass
