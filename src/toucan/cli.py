@@ -325,16 +325,23 @@ def dispatch(args, app):
             if m['request_id'] and m['part']:
                 content = f'This request is only this part of the message: {m["part"]}\n\nThe whole message:\n{content}'
             if m['source'] == 'teams':
-                for attachment in json.loads(m['attachments_json']):
+                attachments = json.loads(m['attachments_json'])
+                for attachment in attachments:
                     if attachment.get('local_path'):
                         content += '\nScreenshot: ' + attachment['local_path']
                     elif attachment.get('contentUrl') and attachment.get('access_note'):
                         content += ('\nFile: ' + (attachment.get('name') or 'unnamed file') + ' ' + attachment['contentUrl'] +
                                     "\nThe bot can't download files. The owner's own Microsoft login is needed.")
                     elif attachment.get('download_status'):
-                        content += '\nScreenshot: ' + attachment['download_status'] + ' ' + str(attachment.get('http_status', ''))
+                        content += ('\nScreenshot: ' + attachment['download_status'] + ' ' + str(attachment.get('http_status', '')) +
+                                    "\nThe bot didn't save this image. Fetch it with the owner's own Microsoft login.")
+                own = m['own_text'] if m['own_text'] is not None else m['text']
+                if not (own or '').strip() and not attachments and not m['deleted']:
+                    content += ("\nNo text or attachments reached the bot. It may be a video or other media the bot "
+                                "can't receive. Fetch it with the owner's own Microsoft login.")
             content = '\n'.join('| ' + line for line in content.splitlines())
-            blocks.append(f'----- {kind} from {json.dumps(label)} via {m["source"]}/{m["chat"]} '
+            where = f'{m["source"]}/{m["chat"]}' + (f' message {m["msg_id"]}' if m['source'] == 'teams' else '')
+            blocks.append(f'----- {kind} from {json.dumps(label)} via {where} '
                           f'at {app.local(m["ts"]) if m["ts"] else "unknown creation time"} ({req}) {flags} -----\n{content}\n----- END -----')
         return '\n\n'.join(blocks)
     if c == 'claim':

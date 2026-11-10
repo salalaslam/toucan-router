@@ -522,6 +522,21 @@ def test_teams_application_context_and_file_screenshot_details_reach_inbox(world
     assert 'Screenshot: /example/media/screenshot.img' in rendered
 
 
+
+def test_teams_media_the_bot_missed_is_flagged_with_the_message_id(world):
+    import json
+    from toucan.cli import dispatch, parser
+    world.seed()
+    world.team('image', text='image', attachments_json=json.dumps([
+        dict(contentType='image/*', download_status='unavailable')]))
+    world.team('video', text='', attachments_json='[]')
+    world.app.sync()
+    rendered = dispatch(parser().parse_args(['inbox', '--thread', 'project-a']), world.app)
+    image, video = (b for b in rendered.split('----- END -----') if 'message image ' in b or 'message video ' in b)
+    assert "didn't save this image" in image and "owner's own Microsoft login" in image
+    assert 'may be a video' in video and "owner's own Microsoft login" in video
+
+
 @pytest.mark.parametrize('eligible', [True, 'before-seed', 'before-active', 'seed-context'])
 def test_recovered_teams_identity_and_creation_promote_only_deferred_eligible_once(world, eligible):
     if eligible != 'seed-context':
