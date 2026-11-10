@@ -537,6 +537,34 @@ def test_teams_media_the_bot_missed_is_flagged_with_the_message_id(world):
     assert 'may be a video' in video and "owner's own Microsoft login" in video
 
 
+
+def test_unsaved_image_note_skips_an_image_graph_saved(world):
+    import base64
+    import json
+    from toucan.cli import dispatch, parser
+
+    def live(obj):
+        return dict(contentType='image/*', download_status='unavailable',
+                    contentUrl=f'https://smba.trafficmanager.net/region/v3/attachments/{obj}/views/original')
+
+    def graph(obj):
+        hosted = base64.b64encode(f'id=x_{obj},type=1,url=https://as-api.asm.skype.com/v1/objects/{obj}/views/imgo'.encode()).decode()
+        return dict(contentType='image/*', download_status='available', local_path=f'/example/media/{obj}.img',
+                    contentUrl=f'https://graph.microsoft.com/v1.0/chats/chat/messages/m/hostedContents/{hosted}/$value')
+
+    world.seed()
+    world.team('same', text='image', attachments_json=json.dumps([live('0-aa-1'), graph('0-aa-1')]))
+    world.team('alone', text='image', attachments_json=json.dumps([live('0-bb-2')]))
+    world.team('mixed', text='images', attachments_json=json.dumps([live('0-cc-3'), graph('0-dd-4')]))
+    world.app.sync()
+    rendered = dispatch(parser().parse_args(['inbox', '--thread', 'project-a']), world.app)
+    blocks = {name: next(b for b in rendered.split('----- END -----') if f'message {name} ' in b)
+              for name in ('same', 'alone', 'mixed')}
+    assert "didn't save" not in blocks['same'] and 'Screenshot: /example/media/0-aa-1.img' in blocks['same']
+    assert "didn't save" in blocks['alone']
+    assert "didn't save" in blocks['mixed'] and 'Screenshot: /example/media/0-dd-4.img' in blocks['mixed']
+
+
 @pytest.mark.parametrize('eligible', [True, 'before-seed', 'before-active', 'seed-context'])
 def test_recovered_teams_identity_and_creation_promote_only_deferred_eligible_once(world, eligible):
     if eligible != 'seed-context':

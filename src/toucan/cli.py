@@ -1,5 +1,6 @@
 """Small argparse interface. Claim IDs coordinate workers; they do not authenticate them."""
 import argparse
+import base64
 import json
 import re
 import sqlite3
@@ -10,6 +11,7 @@ from .core import App
 from . import agentsetup, configedit, discovery, router, services, setup
 from .effects import Effects
 from .storage import connect
+from urllib.parse import unquote
 
 # Printed with every inbox, so the rule is in front of the thread when it answers. Owner threads replied
 # from memory to keep to the reply deadline, and dropped their own doubts to fit a short reply.
@@ -21,6 +23,21 @@ ACCURACY = ('Accuracy before speed. State something as fact only if you checked 
             'uses a term you cannot match for certain to something in the chat history or documents, ask what '
             'they mean with --keep-open before answering. Before sending, reread the reply: every claim must be '
             'checked or marked as not confirmed.')
+
+
+def media_id(url):
+    """The Teams object ID behind a connector or Graph hostedContents image URL, or None."""
+    url = unquote(str(url or ''))
+    if found := re.search(r'/(?:attachments|objects)/([^/]+)/views/', url):
+        return found.group(1)
+    if found := re.search(r'/hostedContents/([^/]+)/', url):
+        try:
+            decoded = base64.b64decode(found.group(1) + '==', altchars=b'-_').decode('utf-8', 'replace')
+        except ValueError:
+            return None
+        if found := re.search(r'/objects/([^/,]+)/views/', decoded):
+            return found.group(1)
+    return None
 
 
 def thread_rules(cfg, thread):
@@ -326,7 +343,12 @@ def dispatch(args, app):
                 content = f'This request is only this part of the message: {m["part"]}\n\nThe whole message:\n{content}'
             if m['source'] == 'teams':
                 attachments = json.loads(m['attachments_json'])
+                # Live push and Graph catch-up can both store the same image; a saved copy covers the other.
+                saved = {media_id(a.get('contentUrl')) for a in attachments if a.get('local_path')} - {None}
                 for attachment in attachments:
+                    if (not attachment.get('local_path') and attachment.get('download_status')
+                            and media_id(attachment.get('contentUrl')) in saved):
+                        continue
                     if attachment.get('local_path'):
                         content += '\nScreenshot: ' + attachment['local_path']
                     elif attachment.get('contentUrl') and attachment.get('access_note'):
