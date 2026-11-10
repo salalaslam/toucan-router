@@ -425,6 +425,49 @@ recipient from the last hour. Drafts and escalations to you are never held back.
 An unavailable source is skipped and reported, and the others still sync. Alerts fire once
 per problem until it recovers.
 
+## Ledger and Preflight
+
+Experimental. A project with a [`[projects.KEY.ledger]`](configuration.md#projectskeyledger)
+table gets a timeline of what its people sent Toucan and what Toucan sent them, and a check
+before each send.
+
+**The timeline** comes from the router's own state: routed messages from the project's people
+and the thread's sends (`toucan reply` and `toucan send`). A send counts for a project only when
+its thread owns the project, so someone who works on two projects has two separate timelines.
+GitHub issues, pull request comments and review comments from the listed repositories are added
+by `toucan sync` every `github_minutes`, through `gh api`; `gh` must be signed in. Each page and
+its cursor commit together and items are keyed by GitHub ID, so an interrupted read repeats at
+most one page. A failed read is logged (`ledger_github_error`) and never fails a sync.
+
+**Preflight** runs on each send from the project's thread to one of its people. It holds a send
+when:
+
+| Rule | Holds when |
+|---|---|
+| `pel_first` | Review material (a link to a `review_hosts` host, or a `review_words` message with links) goes to someone other than the PEL, and the PEL hasn't had the same topic or link yet, or got it less than `pel_wait_minutes` ago and hasn't replied. |
+| `review_link` | A message about wireframes or mock-ups links to a host that isn't in `review_hosts` (GitHub links are ignored). |
+| `supersede` | The message replaces something a person other than the PEL already has. |
+| `burst` | The person has had `burst_per_hour` sends in the last hour without writing back. |
+
+In `shadow` mode the send goes out and the verdict is recorded as a `preflight` event. In
+`enforce` mode a held send is refused (exit 3) with the reasons, and the thread fixes the
+message or sends it with `--override "why it must go now"`, which is recorded. Drafts,
+escalations and the router's own questions are never checked. If the check itself fails, the
+error is recorded and the send goes out.
+
+The owner thread's `toucan inbox` lists who it has messaged in the last two hours and about which
+topics.
+
+```sh
+toucan ledger show --project project-a --since 2d [--person alice] [--topic 2.1] [--json]
+toucan ledger replay --project project-a --since 14d --json   # Preflight on past sends, as they stood then
+toucan ledger status --json                                   # modes, GitHub reads, verdicts this week
+toucan ledger sync --json                                     # read GitHub now
+```
+
+Use `replay` before you switch a project to `enforce`: it shows which past sends each rule
+would have held.
+
 ## Data and retention
 
 The state database holds copies of routed messages, requests, deliveries and the event log.
@@ -432,7 +475,8 @@ Toucan creates its state folder with mode 700 and the database with mode 600. It
 change the mode of a folder that already exists; `toucan doctor` warns (`state.permissions`)
 if the folder or database is readable by other users. Source databases
 are always opened read-only. Media downloaded for transcription is kept in
-`~/.local/state/toucan/media/`. The router doesn't delete old data on its own; the bot expires its screenshot cache as described below. Back up or prune
+`~/.local/state/toucan/media/`. Ledger projects also store copies of their GitHub issues and
+comments in the database. The router doesn't delete old data on its own; the bot expires its screenshot cache as described below. Back up or prune
 the state folder the way you would any other private data.
 
 

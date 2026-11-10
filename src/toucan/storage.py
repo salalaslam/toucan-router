@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS cards (
 CREATE INDEX IF NOT EXISTS card_request ON cards(request_id);
 CREATE TABLE IF NOT EXISTS alerts (key TEXT PRIMARY KEY, text TEXT, since REAL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS ledger_github (
+ id INTEGER PRIMARY KEY, repo TEXT, kind TEXT, gh_id TEXT, number INTEGER, author TEXT, created_at REAL, updated_at REAL,
+ body TEXT, url TEXT, UNIQUE(repo,kind,gh_id));
+CREATE INDEX IF NOT EXISTS ledger_github_time ON ledger_github(repo,created_at);
 '''.replace('{requests}', REQUESTS.format(name='requests')).replace('{decisions}', DECISIONS.format(name='router_decisions'))
 
 

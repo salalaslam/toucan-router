@@ -118,6 +118,7 @@ One table per person who may ask for work. `KEY` is how routes refer to them.
 | `whatsapp` | no | List of JIDs: the phone JID and any `@lid` alias. |
 | `teams_id` | no | Entra object ID (`sender_aad_id` in `toucan-bot messages --json`). |
 | `email` | no | List of email addresses. |
+| `github` | no | List of GitHub logins. Used only by a project's [ledger](#projectskeyledger), to tell whose issue or comment it is. |
 
 Each identity may belong to only one person.
 
@@ -191,6 +192,41 @@ attempt before sending, so restarts do not duplicate it. Failed or uncertain sen
 operator inspection, as with other deliveries. Closed, replaced and answered cards do not
 forward. Held cards, same-question updates, the 09:00 owner list and Toucan's own routing
 escalations keep their existing behavior.
+
+### `[projects.KEY.ledger]`
+
+Turns on the ledger and Preflight for one project. Both are experimental. The ledger is a
+timeline of what the project's people sent and what Toucan sent them, on WhatsApp, Teams and
+GitHub. Preflight checks each `toucan reply` and `toucan send` from the project's thread
+against that timeline before the message is queued. See
+[operations](operations.md#ledger-and-preflight).
+
+```toml
+[projects.project-a.ledger]
+mode = "shadow"
+people = ["alice", "bob"]
+pel = "bob"
+review_hosts = ["excalidraw.com"]
+github = ["example/project-a"]
+self_github = ["example-owner"]
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `mode` | `"shadow"` | `off`, `shadow` (record what Preflight would hold, send anyway) or `enforce` (refuse held sends unless the thread passes `--override`). |
+| `people` | `[]` | Person keys the ledger follows. Sends to anyone else are not checked. |
+| `pel` | the project's `escalate_to`, if it is in `people` | The person who reviews material before everyone else. Empty turns off the PEL-first check. |
+| `review_hosts` | `[]` | Hosts whose links count as review material, such as a whiteboard or a question form. Subdomains match. |
+| `review_words` | wireframe, mock-up, mockup, mock up | Words that make a message with links review material. |
+| `topics` | `sprint` and `issue` | Name to regular expression. The first group (or the whole match) is the topic key, stored as `name:key`, such as `sprint:2.1` or `issue:12`. |
+| `supersede` | "these replace", "instead of the … I sent" | Regular expressions for a message that replaces something the person already has. |
+| `burst_per_hour` | 4 | Sends to one person within an hour, without them writing back, before the next is held. |
+| `pel_wait_minutes` | 30 | How long other people wait for the PEL to reply before review material can go to them anyway. |
+| `github` | `[]` | Repositories (`owner/name`) whose issues and comments go into the ledger. |
+| `self_github` | `[]` | Logins whose GitHub posts count as sent by us. |
+| `github_minutes` | 10 | How often `toucan sync` reads GitHub. |
+
+Unknown keys are refused, so a typo can't silently turn a check off.
 
 ## `[[routes]]`
 

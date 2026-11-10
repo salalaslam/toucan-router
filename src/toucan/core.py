@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import cards, router, sources, t3
+from . import cards, ledger, router, sources, t3
 from .config import GROUP, PHONE, Refused, ValidationError, hook_warning, prefixed, reply_phone, timestamp
 from .effects import Effects
 from .storage import account_warning, event, insert, private_dir
@@ -421,6 +421,12 @@ class App:
                     self.wake(report, report['problems'], self.fx.now(), limited, only=threads)
             except Exception as error:
                 report['problems']['router:wake'] = f'Router: waking routed requests failed ({type(error).__name__}); the next sync wakes them'
+        # Last: GitHub reads are slow and optional. A failure is logged for `toucan ledger status`, never a sync problem.
+        if not self.shadow:
+            try:
+                report['ledger'] = ledger.github_sync(self)
+            except Exception as error:
+                report['ledger'] = dict(error=type(error).__name__)
         return report
 
     def owner_ping(self, mapping, now):
@@ -1150,7 +1156,7 @@ class App:
                 return e['kind'] == 'reaction_added'
         return False
 
-    def send(self, route_name, thread, text='', file=None, caption='', chat=None):
+    def send(self, route_name, thread, text='', file=None, caption='', chat=None, override=None):
         route = next((r for r in self.cfg['routes'] if r['name'] == route_name), None)
         if not route:
             raise ValidationError('unknown route')
@@ -1176,11 +1182,11 @@ class App:
             out = self._queue_delivery(None, thread, 'draft' if draft else 'send',
                                        'teams-bot' if as_bot else 'whatsapp',
                                        self.drafts_chat() if draft else phone if teams_direct else chat, body, file,
-                                       route=route_name, chat=chat)
+                                       override=override, route=route_name, chat=chat)
         return self._send_outbox(out, thread)
 
     def deliver(self, req, claim, text='', file=None, caption='', keep_open=False, escalation=False, thread=None,
-                promise=None, due=None, card=None):
+                promise=None, due=None, card=None, override=None):
         if not claim:
             raise Refused('current claim required')
         with self.transaction():
@@ -1237,7 +1243,8 @@ class App:
                              f'reply pass to send it to {self.settings["owner_name"]} now.')
                     self.db.execute('UPDATE cards SET delegate_jid=?,delegate_name=?,wait_minutes=? WHERE id=?',
                                     (recipient, person['name'], wait, card_row))
-            out = self._queue_delivery(req, row['thread'], kind, 'teams-bot' if as_bot else 'whatsapp', recipient, body, file)
+            out = self._queue_delivery(req, row['thread'], kind, 'teams-bot' if as_bot else 'whatsapp', recipient, body, file,
+                                       override=override)
             if card_row:
                 self.db.execute('UPDATE cards SET outbox_id=? WHERE id=?', (out, card_row))
         result = self._send_outbox(out, row['thread'], req, keep_open, promise, due)
@@ -1364,9 +1371,10 @@ class App:
             return f'@[{person["teams_id"]}]'
         return TAG.sub(swap, body) if body else body
 
-    def _queue_delivery(self, req, thread, kind, source, recipient, body, file, **detail):
+    def _queue_delivery(self, req, thread, kind, source, recipient, body, file, override=None, **detail):
         if file and not Path(file).is_file():
             raise ValidationError('attachment file does not exist')
+        raw = body
         body = self.tags(body, source)
         if source == 'teams-bot' and file and not still_image(file):
             raise ValidationError('the Toucan bot posts text and still images (PNG, JPEG, GIF, WebP) only; send other files another way')
@@ -1377,10 +1385,16 @@ class App:
         # Drafts and escalations go to the owner and are never held back.
         if kind == 'send' and count >= self.settings['rate_per_hour']:
             raise Refused('recipient hourly rate limit reached')
+        # Judged on the text as written (person keys in tags), against the chat it goes to. The router's own
+        # "which project?" question is exempt.
+        checks = (ledger.preflight(self, thread, recipient, f'{raw or ""}\n{body or ""}', override)
+                  if kind == 'send' and 'asks_request' not in detail else [])
         out = insert(self.db, 'outbox', attempt_id=str(uuid.uuid4()), request_id=req, kind=kind,
                      source=source, to_chat=recipient, text=body, file=str(file) if file else None,
                      state='pending', created_at=self.fx.now(), updated_at=self.fx.now())
         self.record('outbox_pending', thread, req, outbox=out, delivery_kind=kind, **detail)
+        for check in checks:
+            self.record('preflight', thread, req, outbox=out, **check)
         return out
 
     def _send_outbox(self, out, thread, req=None, keep_open=False, promise=None, due=None):
