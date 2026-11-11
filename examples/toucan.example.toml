@@ -16,10 +16,11 @@ rate_per_hour = 20
 context_hours = 24
 ack_alert_minutes = 5
 fallback_minutes = 5
-rotate_tokens = 200000       # ask idle owner threads to hand over at this context size
+rotate_tokens = 200000       # ask owner threads to hand over at this context size
 rotate_stall_minutes = 60    # alert if a handover has not finished by then
 # transcribe = "chatgpt-transcribe"   # voice notes become text before they reach a thread
 # thread_rules = """Standing rules printed to every owner thread with each inbox."""
+# pause_file = "~/.cache/quota-pause/state.json"   # while it holds "paused": true, owner threads keep work short
 # The router: routes with router = "shadow" log which thread it would pick; router = "live" sends requests there.
 # router_general_thread = "general"   # thread for off-topic requests; required once a route uses the router
 # router_commands = [                   # tried in order; each reads the prompt on stdin, prints one JSON object

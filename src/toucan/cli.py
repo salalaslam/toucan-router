@@ -30,6 +30,17 @@ def thread_rules(cfg, thread):
     return [t.strip() for t in texts if t.strip()]
 
 
+def pause_note(app, pause):
+    """What an owner thread does while work is paused (settings.pause_file)."""
+    hhmm = lambda ts: app.local(ts).split()[1]
+    when = (f' since {hhmm(pause["since"])}' if pause['since'] else '') + (f' until {hhmm(pause["until"])}' if pause['until'] else '')
+    why = f' ({pause["reason"]})' if pause['reason'] else ''
+    return (f'Work is paused{why}{when}. Keep answering the people who message you, with short replies. '
+            'Start no delegates, subagents, background agents or long work until the pause ends: for anything '
+            'that needs them, claim it, say briefly that you will pick it up after the pause, and keep it open '
+            'with --keep-open or --promise. When this note is gone from `toucan inbox`, carry on as normal.')
+
+
 def parser():
     p = argparse.ArgumentParser(prog='toucan')
     commands = p.add_subparsers(dest='command', required=True)
@@ -304,10 +315,13 @@ def dispatch(args, app):
             sent = ledger.recent(app, args.thread)
         except Exception:
             sent = []
+        pause = app.pause()
         if args.json:
-            return dict(next_steps=commands, accuracy=ACCURACY, rules=rules, waiter_running=waiting, recently_sent=sent,
-                        untrusted_messages=messages)
+            return dict(next_steps=commands, accuracy=ACCURACY, pause=pause and pause_note(app, pause), rules=rules,
+                        waiter_running=waiting, recently_sent=sent, untrusted_messages=messages)
         blocks = [commands, ACCURACY]
+        if pause:
+            blocks.append(pause_note(app, pause))
         if sent:
             blocks.append('Sent recently (`toucan ledger show` has the full timeline). Combine updates to the same person, '
                           'and check this before sending more:\n' + '\n'.join('- ' + line for line in sent))

@@ -738,6 +738,24 @@ class App:
                             ('rules:' + thread, json.dumps(dict(digest=digest, t3_thread=live, at=now))))
         return True
 
+    def pause(self):
+        """The pause another tool set in settings.pause_file, as {since, until, reason}, or None.
+        The file is JSON; owner threads are paused while it holds "paused": true. A missing or
+        unreadable file means no pause, so a broken pause tool never silences the owner threads."""
+        path = self.settings['pause_file']
+        if not path:
+            return None
+        try:
+            data = json.loads(Path(path).expanduser().read_text())
+        except (OSError, UnicodeError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get('paused') is not True:
+            return None
+        num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+        reason = data.get('reason')
+        return dict(since=num(data.get('since')), until=num(data.get('until')),
+                    reason=reason.strip() if isinstance(reason, str) and reason.strip() else None)
+
     def pending(self, thread):
         return self.rows("SELECT r.*,m.ts FROM requests r JOIN messages m ON m.id=r.message_id "
                          f"WHERE r.thread=? AND r.state IN {OPEN} AND (r.state='new' OR r.change_pending=1) AND r.routing IS NULL", (thread,))
@@ -909,6 +927,8 @@ class App:
                 if resolved and resolved != rotation['old']:
                     self.record('rotated', key, old=rotation['old'], new=resolved, tokens=rotation['tokens'])
                     self.db.execute('DELETE FROM meta WHERE key=?', ('rotate:' + key,))
+                    # Wakes spent on the old thread while it was busy must not leave new requests unwoken.
+                    self.db.execute("UPDATE requests SET wakes=0,last_wake_at=NULL WHERE thread=? AND state='new'", (key,))
                     if self.settings['alert_url'] and not self.dry and not self.shadow:
                         size = f'{rotation["tokens"] / 1000:g}k tokens' if rotation['tokens'] is not None else 'unknown context size'
                         text = f'{key} moved to a fresh thread; the old one had {size}'
@@ -923,10 +943,12 @@ class App:
                 continue
             usage = sources.thread_usage(self.paths, live)
             threshold = thread.get('rotate_tokens', self.settings['rotate_tokens'])
-            if (not live or not usage or usage['busy'] is not False or usage['used_tokens'] < threshold
-                    or self.pending(key) or self.db.execute(
-                        "SELECT 1 FROM outbox o JOIN requests r ON r.id=o.request_id "
-                        "WHERE r.thread=? AND o.state IN ('pending','sending')", (key,)).fetchone()):
+            # A busy thread or one with requests waiting still hands over: T3 queues the webhook run behind
+            # the running turn, so the handover starts at the next gap between turns. Waiting for an idle
+            # thread let an always-busy owner grow to 900k tokens. New requests stay new for the successor.
+            if (not live or not usage or usage['used_tokens'] < threshold or self.db.execute(
+                    "SELECT 1 FROM outbox o JOIN requests r ON r.id=o.request_id "
+                    "WHERE r.thread=? AND o.state IN ('pending','sending')", (key,)).fetchone()):
                 continue
             tokens = usage['used_tokens']
             summary = (f'{key}: your context is {tokens / 1000:g}k tokens, over the {threshold / 1000:g}k limit. '
@@ -994,9 +1016,12 @@ class App:
             instructions += ('\n\na. Write a handoff brief for your successor inline (no files), under about 900 words, '
                              'with no secrets, tokens or hook URLs. Include people and chats and reply tone; environments, '
                              f"deploys and what needs {self.settings['owner_name']}'s OK; repo conventions; each open request with its id, claim id, "
-                             'promise, real state and exact next step; unfinished work with no request; each result you owe '
+                             'promise, real state and exact next step; new requests you have not claimed yet, by id; '
+                             'unfinished work with no request; each result you owe '
                              'another T3 thread or are waiting on from one, with its thread link, what was asked, and that '
-                             'the reply goes to that thread with t3_thread_send; recent history that '
+                             'the reply goes to that thread with t3_thread_send; each delegate, subagent or background '
+                             'command still running, with its task id, what it does and where its result will land; '
+                             'recent history that '
                              f'matters; things {self.settings["owner_name"]} corrected or asked for.\n'
                              'b. Read your model selection and modes with t3_thread_configuration, then launch the successor '
                              'with t3_thread_launch: same project, workspaceStrategy {type:"root"}, the same modelSelection '
@@ -1004,7 +1029,9 @@ class App:
                              'below followed by your brief.\n'
                              f'c. Wait for it with t3_thread_wait, then run `toucan rotate --thread {key} --check`. '
                              'When it says the rotation is done, stop your background `toucan wait`, do not start it again, '
-                             'do not claim or reply to anything else, and end your turn. If the check fails, escalate nothing; '
+                             'do not claim or reply to anything else, and end your turn. Delegates and background commands '
+                             'you started still report back to you: when one does after the handover, send its result to '
+                             'the successor with t3_thread_send and end your turn. If the check fails, escalate nothing; '
                              'just report what failed in your final message.\n\nSuccessor setup block:\n' + setup)
             return dict(thread=key, old=old, hook_file=str(hook_file), task_id=task, t3_db=t3db, origin=origin,
                         requests=requests, successor_setup=setup, instructions=instructions)
