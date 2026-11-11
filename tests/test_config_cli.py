@@ -350,3 +350,30 @@ def test_inbox_prints_rules_in_full_only_when_new_changed_or_stale(world, monkey
     assert 'Rule two.' in inbox()
     monkeypatch.setattr('toucan.sources.hook_file_thread', lambda paths, hook: 'successor-thread')
     assert 'Rule two.' in inbox()
+
+
+def test_inbox_tells_owner_threads_about_a_pause(world, monkeypatch, capsys, tmp_path):
+    pause = tmp_path / 'pause.json'
+    world.config_path.write_text(world.config_text.replace('[settings]', f'[settings]\npause_file = "{pause}"', 1))
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    monkeypatch.setenv('TOUCAN_DB', str(world.db_path))
+    invoke = lambda argv: main(argv, effects=world.fx, paths=world.paths)
+    world.seed()
+    world.request()
+    for text in (None, 'not json', '{"paused": false}', '{"paused": "yes"}', '[true]'):
+        if text is None:
+            pause.unlink(missing_ok=True)
+        else:
+            pause.write_text(text)
+        assert invoke(['inbox', '--thread', 'project-a']) == 0
+        assert 'Work is paused' not in capsys.readouterr().out
+    pause.write_text(json.dumps(dict(paused=True, since=world.now, until=world.now + 3600, reason='Claude quota')))
+    assert invoke(['inbox', '--thread', 'project-a']) == 0
+    out = capsys.readouterr().out
+    assert 'Work is paused (Claude quota) since 07:00 until 08:00.' in out and 'Start no delegates' in out
+    assert out.index('Work is paused') < out.index('----- UNTRUSTED CONTENT')
+    assert invoke(['inbox', '--thread', 'project-a', '--json']) == 0
+    assert 'short replies' in json.loads(capsys.readouterr().out)['pause']
+    pause.write_text('{"paused": true}')
+    assert invoke(['inbox', '--thread', 'project-a']) == 0
+    assert 'Work is paused. Keep answering' in capsys.readouterr().out

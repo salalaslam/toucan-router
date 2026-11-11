@@ -85,37 +85,68 @@ def test_rotation_defaults_and_override(world):
     assert app.sync()['wakes'][0]['rotate']
 
 
-@pytest.mark.parametrize('blocked', [
-    'below', 'running', 'queued', 'unknown-status', 'background', 'unknown-usage', 'missing-background',
-    'missing-provider', 'missing-run', 'limited', 'pending', 'changed', 'pending-outbox', 'sending-outbox', 'subagent',
-])
-def test_rotation_waits_until_size_and_activity_are_known_and_work_is_clear(world, blocked):
+def owner_in_state(world, req, state):
+    world.t3_owner(used=199999 if state == 'below' else 412000,
+                   status=state if state in ('running', 'queued', 'unknown-status') else 'completed',
+                   pending=[{'id': 'background'}] if state == 'background' else [])
+    if state == 'limited':
+        world.t3('limit', world.now, 'API Error: 429 rate_limit_error', thread='owner-thread', role='assistant')
+    if state in ('pending', 'changed'):
+        world.db.execute("UPDATE requests SET state=?,change_pending=? WHERE id=?",
+                         ('new' if state == 'pending' else 'claimed', int(state == 'changed'), req))
+    if state.endswith('-outbox'):
+        world.db.execute('INSERT INTO outbox (request_id,state,updated_at) VALUES (?,?,?)',
+                         (req, state.split('-')[0], world.now))
+    with sqlite3.connect(world.paths.t3) as db:
+        if state in ('unknown-usage', 'missing-background'):
+            path = '$.contextUsage' if state == 'unknown-usage' else '$.pendingBackgroundTasks'
+            db.execute('UPDATE orchestration_v2_projection_provider_threads SET payload_json=json_remove(payload_json,?)', (path,))
+        if state == 'missing-provider':
+            db.execute('DELETE FROM orchestration_v2_projection_provider_threads')
+        if state == 'missing-run':
+            db.execute('DELETE FROM orchestration_v2_projection_runs')
+        if state == 'subagent':
+            db.execute("INSERT INTO orchestration_v2_projection_subagents VALUES ('agent','owner-thread','running')")
+
+
+@pytest.mark.parametrize('blocked', ['below', 'unknown-usage', 'missing-provider', 'limited', 'pending-outbox', 'sending-outbox'])
+def test_rotation_waits_until_size_is_known_and_deliveries_are_clear(world, blocked):
     world.seed()
     req = world.request()
     world.app.claim([req], 'project-a')
-    world.t3_owner(used=199999 if blocked == 'below' else 412000,
-                   status=blocked if blocked in ('running', 'queued', 'unknown-status') else 'completed',
-                   pending=[{'id': 'background'}] if blocked == 'background' else [])
-    if blocked == 'limited':
-        world.t3('limit', world.now, 'API Error: 429 rate_limit_error', thread='owner-thread', role='assistant')
-    if blocked in ('pending', 'changed'):
-        world.db.execute("UPDATE requests SET state=?,change_pending=? WHERE id=?",
-                         ('new' if blocked == 'pending' else 'claimed', int(blocked == 'changed'), req))
-    if blocked.endswith('-outbox'):
-        world.db.execute('INSERT INTO outbox (request_id,state,updated_at) VALUES (?,?,?)',
-                         (req, blocked.split('-')[0], world.now))
-    with sqlite3.connect(world.paths.t3) as db:
-        if blocked in ('unknown-usage', 'missing-background'):
-            path = '$.contextUsage' if blocked == 'unknown-usage' else '$.pendingBackgroundTasks'
-            db.execute('UPDATE orchestration_v2_projection_provider_threads SET payload_json=json_remove(payload_json,?)', (path,))
-        if blocked == 'missing-provider':
-            db.execute('DELETE FROM orchestration_v2_projection_provider_threads')
-        if blocked == 'missing-run':
-            db.execute('DELETE FROM orchestration_v2_projection_runs')
-        if blocked == 'subagent':
-            db.execute("INSERT INTO orchestration_v2_projection_subagents VALUES ('agent','owner-thread','running')")
+    owner_in_state(world, req, blocked)
     assert not any(w.get('rotate') for w in world.app.sync()['wakes'])
     assert world.app.rotation('project-a') is None
+
+
+@pytest.mark.parametrize('busy', [
+    'running', 'queued', 'unknown-status', 'background', 'missing-background', 'missing-run', 'subagent', 'pending', 'changed',
+])
+def test_a_busy_owner_or_one_with_requests_waiting_is_still_asked_to_hand_over(world, busy):
+    # T3 queues the rotation wake behind the running turn, so the handover starts between turns.
+    world.seed()
+    req = world.request()
+    world.app.claim([req], 'project-a')
+    owner_in_state(world, req, busy)
+    assert any(w.get('rotate') for w in world.app.sync()['wakes'])
+    assert world.app.rotation('project-a')['old'] == 'owner-thread'
+
+
+def test_new_requests_get_a_fresh_wake_budget_for_the_successor(world):
+    world.seed()
+    req = world.request()
+    world.t3_owner(status='running')
+    for _ in range(world.cfg['settings']['max_wakes'] + 1):
+        world.app.sync()
+        world.advance(20 * 60)
+    assert world.app.rotation('project-a')
+    assert world.app.get(req)['state'] == 'new' and world.app.get(req)['wakes'] == world.cfg['settings']['max_wakes']
+    world.t3_owner(thread='successor', task='new-task', used=1000)
+    world.app.sync()
+    assert world.app.rotation('project-a') is None and world.app.get(req)['wakes'] == 0
+    world.advance(3 * 60)
+    world.app.sync()
+    assert world.app.get(req)['wakes'] == 1 and world.hooks()[-1]['count'] == 1
 
 
 @pytest.mark.parametrize('status', ['completed', 'failed', 'cancelled', 'interrupted'])
@@ -224,6 +255,7 @@ def test_manual_rotation_output_and_checks_preserve_open_work_without_tokens(wor
     assert result['requests'][0]['promise'] == 'send results'
     assert result['requests'][0]['promise_due'] == world.now + 7200
     assert claim in result['instructions'] and 'task:/project-a' in result['successor_setup']
+    assert 'send its result to the successor' in result['instructions']
     assert 'SECRET-TOKEN' not in output and world.hook.read_text() not in output
     assert invoke(['rotate', '--thread', 'project-a']) == 0
     assert capsys.readouterr().out.strip() == result['instructions']

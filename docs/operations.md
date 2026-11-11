@@ -404,8 +404,12 @@ decision and verdict, and gives the share of marked decisions that are wrong.
 
 ## Thread rotation
 
-When an idle owner thread's context reaches `rotate_tokens`, sync asks it to hand over. It
-waits until no requests or deliveries are pending. The old thread runs
+When an owner thread's context reaches `rotate_tokens`, sync asks it to hand over. It waits
+only for deliveries in flight, not for the thread to go idle or for new requests: T3 queues the
+rotation wake behind a running turn, so the handover starts at the next gap between turns.
+Requests the old thread never claimed stay new, and get a fresh wake budget for the successor
+once the hook points at it. Delegates the old thread started still report back to it; it
+forwards their results to the successor. The old thread runs
 `toucan rotate --thread KEY`, which prints step-by-step instructions. The old thread writes a
 handoff brief and launches a successor with the same model and modes. The successor creates
 its own webhook task and rewrites the hook file. Claims and promises carry over, and the
