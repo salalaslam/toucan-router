@@ -26,7 +26,7 @@ KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens'},
             projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes', 'rules', 'ledger'},
             routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
-                    'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'active_ts'},
+                    'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'send_threads', 'active_ts'},
             sources={'whatsapp': {'store', 'account', 'service_unit'},
                      'teams': {'bot_db', 'stale_minutes', 'service_unit'},
                      'email': {'notmuch_config', 'stale_minutes'}}, t3={'db'})
@@ -256,6 +256,9 @@ def validate(cfg):
                                   'and only on WhatsApp act routes')
         if not isinstance(route.get('reply_prefix', ''), str):
             raise ValidationError(f'route {name}: reply_prefix must be text')
+        extra = route.get('send_threads', [])
+        if not isinstance(extra, list) or any(not isinstance(t, str) or t not in threads or t == route['thread'] for t in extra):
+            raise ValidationError(f'route {name}: send_threads must list other configured threads')
         route['active_ts'] = timestamp(route.get('active_from'))
     return cfg
 

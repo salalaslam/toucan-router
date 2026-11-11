@@ -247,6 +247,7 @@ One entry per group of chats that belongs to one thread.
 | `reply_via_whatsapp` | no | Teams `act` routes without `post_as_bot`. Send the reply to the asker's WhatsApp instead of drafting it to you. |
 | `reply_to` | no | WhatsApp `act` routes. Send every reply to this person's WhatsApp instead of the chat (for groups with clients in them). |
 | `reply_prefix` | no | Text added at the top of every reply and send on this route. |
+| `send_threads` | no | Other thread keys that may also use `toucan send` on this route, for messages that aren't replies (for example a project thread copying a status to a person whose chat another thread owns). Requests still go only to `thread`. |
 | `router` | no | `"off"` (default); `"shadow"`: log which thread the router would pick for each request, without changing where it goes; `"live"`: send each request to the thread the router picks. See [operations](operations.md#the-router). |
 
 ## Where Teams replies go

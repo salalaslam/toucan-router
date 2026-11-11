@@ -614,3 +614,23 @@ def test_owner_reply_stands_down_after_only_failed_sends(world, state, closed):
     world.team('owner-answer', sender='owner-entra')
     world.app.sync()
     assert (world.app.get(req)['state'] == 'closed') == closed
+
+
+def test_send_threads_lets_another_thread_send_on_a_route_it_does_not_own(world):
+    text = world.config_text.replace('[[routes]]\nname = "group"', f'[threads.project-b]\nhook_file = "{world.hook}"\n\n[[routes]]\nname = "group"', 1)
+    world.config_path.write_text(text.replace('name = "alice-whatsapp"\n', 'name = "alice-whatsapp"\nsend_threads = ["project-b"]\n', 1))
+    world.cfg = load(world.config_path)
+    world.app = App(world.cfg, world.db, world.fx, world.paths)
+    world.app.send('alice-whatsapp', 'project-b', text='Copy for you', chat=PHONE)
+    assert world.sends == [['wacli', '--json', 'send', 'text', '--to', PHONE, '--message', 'Copy for you']]
+    with pytest.raises(Refused, match='owner thread'):
+        world.app.send('group', 'project-b', text='Not allowed')
+    assert len(world.sends) == 1
+
+
+@pytest.mark.parametrize('value', ['project-b', ['nope'], ['project-a']])
+def test_send_threads_must_list_other_configured_threads(world, value):
+    text = world.config_text.replace('[[routes]]\nname = "group"', f'[threads.project-b]\nhook_file = "{world.hook}"\n\n[[routes]]\nname = "group"', 1)
+    world.config_path.write_text(text.replace('reply_via_whatsapp = true\n', f'reply_via_whatsapp = true\nsend_threads = {json.dumps(value)}\n', 1))
+    with pytest.raises(ValidationError, match='send_threads'):
+        load(world.config_path)
