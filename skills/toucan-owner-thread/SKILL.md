@@ -103,6 +103,10 @@ leave a blocked request waiting. Escalate only a new decision the owner alone ca
 - Never print or paste hook URLs, tokens or the contents of `~/.config/toucan/hooks/`.
 - If a reply is refused because of an `uncertain` delivery, stop and tell the owner. Don't
   retry until someone has checked whether the message arrived.
+- If Preflight holds a reply, read its reasons and fix the message: send review material to
+  the PEL first, combine updates, or don't re-send what the person already has. Use
+  `--override "why"` only when it really must go now; the reason is recorded. `toucan ledger
+  show --project KEY --person KEY` shows what that person already has from you.
 
 ## Setting yourself up
 

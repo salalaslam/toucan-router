@@ -22,9 +22,9 @@ PHONE = re.compile(r'^\d+@s\.whatsapp\.net$')
 JID = re.compile(r'^\d+@(s\.whatsapp\.net|lid|g\.us)$')
 GROUP = re.compile(r'^\d+(-\d+)?@g\.us$')
 # Keys toucan reads (active_ts is added by load). Anything else is likely a typo that would do nothing.
-KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email'},
+KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email', 'github'},
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens'},
-            projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes', 'rules'},
+            projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes', 'rules', 'ledger'},
             routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
                     'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'active_ts'},
             sources={'whatsapp': {'store', 'account', 'service_unit'},
@@ -165,6 +165,8 @@ def validate(cfg):
                 if (source, identity) in identities:
                     raise ValidationError('identity assigned to multiple people')
                 identities.add((source, identity))
+    from . import ledger
+    ledger.validate_github_logins(people)
     for key, thread in threads.items():
         if not isinstance(thread, dict) or not isinstance(thread.get('hook_file'), str) or not thread['hook_file']:
             raise ValidationError(f'thread {key}: hook_file required')
@@ -197,6 +199,7 @@ def validate(cfg):
         description = project.get('description', '')
         if not isinstance(description, str) or '\n' in description or '\r' in description:
             raise ValidationError(f'project {key}: description must be one line of text')
+        ledger.validate(key, project, people)
         for term in {' '.join(t.lower().split()) for t in (key, project['name'], *aliases)}:
             if terms.setdefault(term, key) != key:
                 raise ValidationError(f'projects {terms[term]} and {key} both use the name or alias {json.dumps(term)}')

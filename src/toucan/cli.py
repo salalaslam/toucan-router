@@ -7,7 +7,7 @@ import sys
 
 from .config import Refused, ValidationError, load, timestamp, warnings
 from .core import App
-from . import agentsetup, configedit, discovery, router, services, setup
+from . import agentsetup, configedit, discovery, ledger, router, services, setup
 from .effects import Effects
 from .storage import connect
 
@@ -95,6 +95,7 @@ def parser():
             body.add_argument('--text')
             body.add_argument('--file')
             sub.add_argument('--caption', default='')
+            sub.add_argument('--override', help='send even though Preflight would hold it; say why it must go now')
         if name == 'send':
             sub.add_argument('--route', required=True)
             sub.add_argument('--chat', help='chat ID, required when the route has several chats')
@@ -138,6 +139,16 @@ def parser():
         if action == 'review':
             sub.add_argument('--route')
             sub.add_argument('--undecided-only', action='store_true', help='only decisions not yet marked right or wrong')
+    books = commands.add_parser('ledger').add_subparsers(dest='action', required=True)
+    for action in ('show', 'replay', 'status', 'sync'):
+        sub = books.add_parser(action)
+        sub.add_argument('--json', action='store_true')
+        if action in ('show', 'replay'):
+            sub.add_argument('--project', required=True)
+            sub.add_argument('--since', default='1d' if action == 'show' else '14d', help='ISO time, or 30m, 2h, 1d ago')
+        if action == 'show':
+            sub.add_argument('--person', help='person key')
+            sub.add_argument('--topic', help='topic key such as sprint:2.1 or issue:12, or just 2.1 or 12')
     discover = commands.add_parser('discover').add_subparsers(dest='source', required=True)
     for source in ('whatsapp', 'teams', 'email', 'threads'):
         sub = discover.add_parser(source)
@@ -235,6 +246,22 @@ def dispatch(args, app):
         if args.action == 'stats':
             return router.stats(app, since)
         return router.review(app, since, args.route, args.undecided_only)
+    if c == 'ledger':
+        if args.action == 'status':
+            return ledger.status(app)
+        if args.action == 'sync':
+            return ledger.github_sync(app, force=True)
+        since = moment(args.since, app.fx.now(), -1)
+        if args.action == 'replay':
+            return ledger.replay(app, args.project, since)
+        items = ledger.show(app, args.project, since, args.person, args.topic)
+        if args.json:
+            return items
+        lines = [f'{i["at"]}  {i["platform"]:<8} {"→" if i["direction"] == "out" else "←"} '
+                 f'{", ".join(app.cfg["people"][p]["name"] for p in i["people"]) or "-"}'
+                 f'{"  [" + ", ".join(i["topics"]) + "]" if i["topics"] else ""}\n    '
+                 + ' '.join((i['text'] or '').split())[:240] for i in items]
+        return '\n'.join(lines) or 'Nothing in that window.'
     if c == 'sync':
         if not 0 < args.lookback_hours < float('inf'):
             raise ValidationError('lookback-hours must be positive')
@@ -273,9 +300,17 @@ def dispatch(args, app):
             commands += f'; not yours: toucan bounce REQ --thread {args.thread} [--claim ID] --reason TEXT'
         waiting = app.waiter_running(args.thread)
         rules = thread_rules(app.cfg, args.thread)
+        try:
+            sent = ledger.recent(app, args.thread)
+        except Exception:
+            sent = []
         if args.json:
-            return dict(next_steps=commands, accuracy=ACCURACY, rules=rules, waiter_running=waiting, untrusted_messages=messages)
+            return dict(next_steps=commands, accuracy=ACCURACY, rules=rules, waiter_running=waiting, recently_sent=sent,
+                        untrusted_messages=messages)
         blocks = [commands, ACCURACY]
+        if sent:
+            blocks.append('Sent recently (`toucan ledger show` has the full timeline). Combine updates to the same person, '
+                          'and check this before sending more:\n' + '\n'.join('- ' + line for line in sent))
         if rules and (args.rules or app.rules_due(args.thread, rules)):
             blocks.append('Standing rules for this thread, from the owner\'s config:\n\n' + '\n\n'.join(rules))
         elif rules:
@@ -362,14 +397,15 @@ def dispatch(args, app):
         if args.text is not None and not args.text.strip():
             raise ValidationError(f'{c} text cannot be empty')
         if c == 'send':
-            return app.send(args.route, args.thread, text=args.text, file=args.file, caption=args.caption, chat=args.chat)
+            return app.send(args.route, args.thread, text=args.text, file=args.file, caption=args.caption, chat=args.chat,
+                            override=args.override)
         if (args.promise is None) != (args.due is None) or (args.promise is not None and not args.promise.strip()):
             raise ValidationError('--promise needs text and --due; --due only goes with --promise')
         due = args.due and moment(args.due, app.fx.now(), 1)
         if due is not None and due <= app.fx.now():
             raise ValidationError('--due must be in the future')
         return app.deliver(args.request, args.claim, text=args.text, file=args.file, caption=args.caption,
-                           keep_open=args.keep_open, thread=args.thread, promise=args.promise, due=due)
+                           keep_open=args.keep_open, thread=args.thread, promise=args.promise, due=due, override=args.override)
     if c == 'digest':
         return app.digest()
     if c == 'retriage':
