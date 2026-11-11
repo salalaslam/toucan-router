@@ -14,7 +14,7 @@ from toucan.core import App
 WIREFRAMES = 'Sprint 1.2 wireframes: https://excalidraw.com/#json=abc'
 
 
-def setup(world, mode='shadow', **extra):
+def setup(world, mode='shadow', routes='', **extra):
     """alice is Products, Bob (person `other`) is the PEL. Both have WhatsApp chats routed to project-a."""
     options = dict(mode=mode, people=['alice', 'other'], pel='other', review_hosts=['excalidraw.com']) | extra
     body = '\n'.join(f'{k} = {json.dumps(v)}' for k, v in options.items())
@@ -28,7 +28,7 @@ thread = "project-a"
 mode = "act"
 requesters = ["other"]
 active_from = "2026-10-17T00:00:00+05:00"
-
+{routes}
 [projects.project-a]
 name = "Project A"
 thread = "project-a"
@@ -292,3 +292,78 @@ def test_cli_show_and_override(world, monkeypatch, capsys):
     assert 'Alice Example  [sprint:1.2]' in capsys.readouterr().out
     assert run('ledger', 'replay', '--project', 'project-a', '--json') == 0
     assert json.loads(capsys.readouterr().out)['held'] == 1
+
+
+GROUP = '155500000099@g.us'
+GROUP_ROUTE = f'''
+[[routes]]
+name = "wa-group"
+source = "whatsapp"
+chats = ["{GROUP}"]
+thread = "project-a"
+mode = "act"
+requesters = ["alice"]
+active_from = "2026-10-17T00:00:00+05:00"
+'''
+
+
+def test_whatsapp_tags_are_credited_to_the_tagged_person(world):
+    setup(world, mode='enforce', routes=GROUP_ROUTE)
+    world.app.send('wa-group', 'project-a', text='@[other] ' + WIREFRAMES)
+    stored = world.app.rows('SELECT text FROM outbox')[-1]['text']
+    assert '@[' not in stored and stored.startswith('Bob Example')
+    assert [i['people'] for i in ledger.timeline(world.app, 'project-a', 0)] == [['other']]
+    world.advance(31 * 60)
+    to_alice(world, WIREFRAMES)
+    assert checks(world)[-1]['verdict'] == 'pass'
+    assert ledger.replay(world.app, 'project-a', 0)['held'] == 0
+
+
+def test_an_empty_pel_turns_the_check_off(world):
+    world.config_path.write_text(world.config_text + '\n[projects.project-a]\nname = "A"\nthread = "project-a"\n'
+                                 'escalate_to = "other"\n\n[projects.project-a.ledger]\npeople = ["alice", "other"]\npel = ""\n')
+    assert load(world.config_path)['projects']['project-a']['ledger']['pel'] == ''
+
+
+def test_a_refused_send_is_recorded(world):
+    setup(world, mode='enforce')
+    with pytest.raises(Refused):
+        to_alice(world, WIREFRAMES)
+    [check] = checks(world)
+    assert check['verdict'] == 'hold' and check['refused'] is True and world.app.rows('SELECT * FROM outbox') == []
+    assert ledger.status(world.app)['preflight_7d'] == [dict(project='project-a', verdict='hold', count=1)]
+
+
+def stamp(minute):
+    return f'2026-10-17T06:{minute:02d}:00Z'
+
+
+def test_github_reads_on_from_the_cursor_not_by_page(world):
+    setup(world, github=['example/repo'])
+    first = [dict(id=i, number=1, title='t', body='', user=dict(login='x'), created_at=stamp(0), updated_at=stamp(i // 10),
+                  html_url='u') for i in range(100)]
+    rest = [dict(id=200, number=2, title='t', body='', user=dict(login='x'), created_at=stamp(0), updated_at=stamp(30),
+                 html_url='u')]
+    calls = []
+
+    def run(argv, timeout=None):
+        if argv[0] != 'gh':
+            return subprocess.CompletedProcess(argv, 0, '', '')
+        calls.append(argv[-1])
+        assert world.app.db.execute("SELECT 1 FROM meta WHERE key='ledger-github:last'").fetchone()
+        page = [] if '/issues?' not in argv[-1] else first if len(calls) == 1 else rest
+        return subprocess.CompletedProcess(argv, 0, json.dumps(page), '')
+    world.fx.run = run
+    assert ledger.github_sync(world.app, force=True) == dict(stored=101, errors=[])
+    assert '&page=' not in calls[0] and calls[1].endswith('since=' + stamp(9))
+
+
+def test_github_stops_at_its_time_budget(world):
+    setup(world, github=['example/repo'])
+
+    def run(argv, timeout=None):
+        world.now += 61
+        return subprocess.CompletedProcess(argv, 0, '[]', '')
+    world.fx.run = run
+    report = ledger.github_sync(world.app, force=True)
+    assert report['stored'] == 0 and [e['kind'] for e in report['errors']] == ['comment', 'review_comment']

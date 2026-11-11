@@ -215,7 +215,7 @@ self_github = ["example-owner"]
 |---|---|---|
 | `mode` | `"shadow"` | `off`, `shadow` (record what Preflight would hold, send anyway) or `enforce` (refuse held sends unless the thread passes `--override`). |
 | `people` | `[]` | Person keys the ledger follows. Sends to anyone else are not checked. |
-| `pel` | the project's `escalate_to`, if it is in `people` | The person who reviews material before everyone else. Empty turns off the PEL-first check. |
+| `pel` | the project's `escalate_to`, if it is in `people` | The person who reviews material before everyone else. Set it to `""` to turn off the PEL-first check. |
 | `review_hosts` | `[]` | Hosts whose links count as review material, such as a whiteboard or a question form. Subdomains match. |
 | `review_words` | wireframe, mock-up, mockup, mock up | Words that make a message with links review material. |
 | `topics` | `sprint` and `issue` | Name to regular expression. The first group (or the whole match) is the topic key, stored as `name:key`, such as `sprint:2.1` or `issue:12`. |

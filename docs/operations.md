@@ -437,7 +437,8 @@ its thread owns the project, so someone who works on two projects has two separa
 GitHub issues, pull request comments and review comments from the listed repositories are added
 by `toucan sync` every `github_minutes`, through `gh api`; `gh` must be signed in. Each page and
 its cursor commit together and items are keyed by GitHub ID, so an interrupted read repeats at
-most one page. A failed read is logged (`ledger_github_error`) and never fails a sync.
+most one page. Each read takes at most about a minute; what's left continues on the next run. A
+failed read is logged (`ledger_github_error`) and never fails a sync.
 
 **Preflight** runs on each send from the project's thread to one of its people. It holds a send
 when:
@@ -450,8 +451,10 @@ when:
 | `burst` | The person has had `burst_per_hour` sends in the last hour without writing back. |
 
 In `shadow` mode the send goes out and the verdict is recorded as a `preflight` event. In
-`enforce` mode a held send is refused (exit 3) with the reasons, and the thread fixes the
-message or sends it with `--override "why it must go now"`, which is recorded. Drafts,
+`enforce` mode a held send is refused (exit 3) with the reasons, and recorded as a `preflight`
+event with `refused: true`. The thread fixes the message or sends it with
+`--override "why it must go now"`, which is recorded too. Who each send was for is recorded when it
+is queued, since WhatsApp replaces `@[person]` tags with names. Drafts,
 escalations and the router's own questions are never checked. If the check itself fails, the
 error is recorded and the send goes out.
 

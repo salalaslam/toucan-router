@@ -31,6 +31,15 @@ PLAIN_HOSTS = ('github.com',)  # proof links, not review artifacts
 LOOKBACK_DAYS = 14
 GITHUB_KINDS = {'issue': 'issues?state=all&', 'comment': 'issues/comments?', 'review_comment': 'pulls/comments?'}
 GITHUB_PAGES = 10
+GITHUB_BUDGET_SECONDS = 60  # keeps a slow GitHub from stalling the every-minute sync
+
+
+class Held(Refused):
+    """Preflight refused a send in enforce mode. The caller records `checks` after its transaction rolls back."""
+
+    def __init__(self, message, checks):
+        super().__init__(message)
+        self.checks, self.thread, self.request = checks, None, None
 
 
 def validate(key, project, people):
@@ -52,7 +61,7 @@ def validate(key, project, people):
             raise ValidationError(f'{where}.{name} must be a list of text')
     if any(p not in people for p in ledger['people']):
         raise ValidationError(f'{where}.people must be configured person keys')
-    if not ledger['pel'] and project.get('escalate_to') in ledger['people']:
+    if 'pel' not in raw and project.get('escalate_to') in ledger['people']:
         ledger['pel'] = project['escalate_to']
     if ledger['pel'] and ledger['pel'] not in ledger['people']:
         raise ValidationError(f'{where}.pel must be one of ledger.people')
@@ -149,7 +158,8 @@ def timeline(app, key, since, until=None, github=True):
     until = until if until is not None else app.fx.now() + 1
     items = []
     for row in sends(app, thread, since, until):
-        who = [p for p in addressed(cfg, row['to_chat'], row['text'], routes.get(row['to_chat'], ())) if p in members]
+        people = row['people'] if row['people'] is not None else addressed(cfg, row['to_chat'], row['text'], routes.get(row['to_chat'], ()))
+        who = [p for p in people if p in members]
         if who:
             items.append(item(ledger, row['created_at'], 'teams' if row['source'] == 'teams-bot' else row['source'], 'out',
                               who, row['to_chat'], row['text'], ref=f'outbox:{row["id"]}'))
@@ -188,12 +198,20 @@ def sends(app, thread, since, until):
     """The thread's sends created in [since, until). The same person can work on several projects, so only
     the project's thread counts: a send's thread is its request's, or for a plain `toucan send` the one
     recorded when it was queued."""
-    queued = dict(app.db.execute("SELECT CAST(json_extract(detail_json,'$.outbox') AS INTEGER),thread FROM events "
-                                 "WHERE kind='outbox_pending' AND ts>=? AND ts<?", (since - 60, until)).fetchall())
+    queued = {row[0]: (row[1], row[2]) for row in app.db.execute(
+        "SELECT CAST(json_extract(detail_json,'$.outbox') AS INTEGER),thread,json_extract(detail_json,'$.people') FROM events "
+        "WHERE kind='outbox_pending' AND ts>=? AND ts<?", (since - 60, until))}
     rows = app.db.execute("SELECT o.id,o.source,o.to_chat,o.text,o.created_at,r.thread FROM outbox o "
                           "LEFT JOIN requests r ON r.id=o.request_id WHERE o.kind='send' AND o.state!='failed' "
                           'AND o.created_at>=? AND o.created_at<? ORDER BY o.created_at,o.id', (since, until))
-    return [dict(r) for r in rows if (r['thread'] or queued.get(r['id'])) == thread]
+    found = []
+    for row in map(dict, rows):
+        recorded_thread, people = queued.get(row['id'], (None, None))
+        if (row['thread'] or recorded_thread) == thread:
+            # WhatsApp turns tags into names before storing, so who it was for is taken from queue time.
+            row['people'] = json.loads(people) if people else None
+            found.append(row)
+    return found
 
 
 def item(ledger, ts, platform, direction, people, chat, text, ref):
@@ -270,13 +288,14 @@ def preflight(app, thread, chat, text, override=None):
         if result:
             result['mode'] = project['ledger']['mode']
             results.append(result)
+    for result in results:
+        result['override'] = (override or '').strip() or None
     held = [r for r in results if r['verdict'] == 'hold' and r['mode'] == 'enforce']
     if held and not (override or '').strip():
         lines = [f'- {reason["text"]}' for r in held for reason in r['reasons']]
-        raise Refused('Preflight held this send:\n' + '\n'.join(lines) +
-                      '\nFix the message, or send it anyway with --override "why it must go now".')
-    for result in results:
-        result['override'] = (override or '').strip() or None
+        raise Held('Preflight held this send:\n' + '\n'.join(lines) +
+                   '\nFix the message, or send it anyway with --override "why it must go now".',
+                   [dict(r, refused=True) for r in results])
     return results
 
 
@@ -301,18 +320,20 @@ def github_sync(app, force=False):
     last = app.db.execute("SELECT value FROM meta WHERE key='ledger-github:last'").fetchone()
     if not force and last and now - float(last[0]) < every:
         return dict(skipped='ran recently')
+    # Mark the run before reading, so a run killed mid-way still waits its turn instead of retrying every sync.
+    with app.transaction():
+        app.db.execute("INSERT OR REPLACE INTO meta VALUES ('ledger-github:last',?)", (str(now),))
     report = dict(stored=0, errors=[])
     for repo in repos:
         for kind, path in GITHUB_KINDS.items():
-            cursor_key = f'ledger-github:{repo}:{kind}'
-            row = app.db.execute('SELECT value FROM meta WHERE key=?', (cursor_key,)).fetchone()
-            since = row[0] if row else iso(now - LOOKBACK_DAYS * 86400)
+            if app.fx.now() - now > GITHUB_BUDGET_SECONDS:
+                report['errors'].append(dict(repo=repo, kind=kind, error='time budget spent; continues next run'))
+                continue
             try:
-                report['stored'] += github_kind(app, repo, kind, path, since, cursor_key)
+                report['stored'] += github_kind(app, repo, kind, path, f'ledger-github:{repo}:{kind}', now)
             except Exception as error:
                 report['errors'].append(dict(repo=repo, kind=kind, error=type(error).__name__ if not isinstance(error, RuntimeError) else str(error)))
     with app.transaction():
-        app.db.execute("INSERT OR REPLACE INTO meta VALUES ('ledger-github:last',?)", (str(now),))
         if report['errors']:
             app.record('ledger_github_error', errors=report['errors'])
         else:
@@ -320,10 +341,14 @@ def github_sync(app, force=False):
     return report
 
 
-def github_kind(app, repo, kind, path, since, cursor_key):
+def github_kind(app, repo, kind, path, cursor_key, started):
+    """Read items updated since the cursor, oldest first, asking again from the new cursor after each full
+    page. Page numbers would skip items that move to the end when they are edited between two requests."""
     stored = 0
-    for page in range(1, GITHUB_PAGES + 1):
-        argv = ['gh', 'api', '-X', 'GET', f'repos/{repo}/{path}sort=updated&direction=asc&per_page=100&page={page}&since={since}']
+    for _ in range(GITHUB_PAGES):
+        row = app.db.execute('SELECT value FROM meta WHERE key=?', (cursor_key,)).fetchone()
+        since = row[0] if row else iso(started - LOOKBACK_DAYS * 86400)
+        argv = ['gh', 'api', '-X', 'GET', f'repos/{repo}/{path}sort=updated&direction=asc&per_page=100&since={since}']
         result = local_run(app.fx, argv, timeout=30)
         if result.returncode != 0:
             raise RuntimeError(f'gh api failed for {repo} {kind} (exit {result.returncode})')
@@ -349,7 +374,11 @@ def github_kind(app, repo, kind, path, since, cursor_key):
                 newest = max(newest or entry['updated_at'], entry['updated_at'])
             if newest:
                 app.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (cursor_key, newest))
-        if len(entries) < 100:
+        # A short page is the end. A full page that didn't move the cursor (100 items edited in the same second)
+        # can't be read further this way; stop rather than loop.
+        if len(entries) < 100 or newest is None or newest <= since:
+            if len(entries) >= 100:
+                raise RuntimeError(f'more than 100 {kind} items in {repo} share one update time; some were not read')
             break
     return stored
 
@@ -375,8 +404,10 @@ def replay(app, key, since):
     routes = chat_people(app.cfg)
     held, checked = [], 0
     for row in sends(app, app.cfg['projects'][key]['thread'], since, app.fx.now() + 1):
-        result = evaluate(app, key, row['to_chat'], row['text'], row['created_at'], routes.get(row['to_chat'], ()),
-                          until=row['created_at'])
+        # Judge who it was for as Preflight did: from the people recorded at queue time when there are any.
+        tags = ' '.join(f'@[{p}]' for p in row['people'] or ())
+        result = evaluate(app, key, row['to_chat'], f'{row["text"] or ""}\n{tags}', row['created_at'],
+                          routes.get(row['to_chat'], ()), until=row['created_at'])
         if not result:
             continue
         checked += 1

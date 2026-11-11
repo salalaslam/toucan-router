@@ -68,6 +68,17 @@ class App:
             self.db.rollback()
             raise
 
+    @contextmanager
+    def preflight_log(self):
+        """Record a send Preflight refused. Its transaction has rolled back by now, so this uses a new one."""
+        try:
+            yield
+        except ledger.Held as held:
+            with self.transaction():
+                for check in held.checks:
+                    self.record('preflight', held.thread, held.request, outbox=None, **check)
+            raise
+
     def rows(self, sql, args=()):
         return [dict(r) for r in self.db.execute(sql, args)]
 
@@ -1178,7 +1189,7 @@ class App:
         body = prefixed(route, caption if file else text)
         if draft:
             body = f'Draft for {route.get("label") or chat}:\n\n{body}'
-        with self.transaction():
+        with self.preflight_log(), self.transaction():
             out = self._queue_delivery(None, thread, 'draft' if draft else 'send',
                                        'teams-bot' if as_bot else 'whatsapp',
                                        self.drafts_chat() if draft else phone if teams_direct else chat, body, file,
@@ -1189,7 +1200,7 @@ class App:
                 promise=None, due=None, card=None, override=None):
         if not claim:
             raise Refused('current claim required')
-        with self.transaction():
+        with self.preflight_log(), self.transaction():
             row = self.get(req, claim, thread)
             message = dict(self.db.execute('SELECT * FROM messages WHERE id=?', (row['message_id'],)).fetchone())
             route = next((r for r in self.cfg['routes'] if r['name'] == row['route']), {})
@@ -1387,12 +1398,22 @@ class App:
             raise Refused('recipient hourly rate limit reached')
         # Judged on the text as written (person keys in tags), against the chat it goes to. The router's own
         # "which project?" question is exempt.
-        checks = (ledger.preflight(self, thread, recipient, f'{raw or ""}\n{body or ""}', override)
-                  if kind == 'send' and 'asks_request' not in detail else [])
+        checks, people = [], None
+        if kind == 'send' and 'asks_request' not in detail and ledger.projects(self.cfg, thread):
+            try:
+                checks = ledger.preflight(self, thread, recipient, f'{raw or ""}\n{body or ""}', override)
+            except ledger.Held as held:
+                held.thread, held.request = thread, req
+                raise
+            try:
+                people = ledger.addressed(self.cfg, recipient, raw or '', ledger.chat_people(self.cfg).get(recipient, ()))
+            except Exception:
+                people = None  # the timeline falls back to reading the stored text
         out = insert(self.db, 'outbox', attempt_id=str(uuid.uuid4()), request_id=req, kind=kind,
                      source=source, to_chat=recipient, text=body, file=str(file) if file else None,
                      state='pending', created_at=self.fx.now(), updated_at=self.fx.now())
-        self.record('outbox_pending', thread, req, outbox=out, delivery_kind=kind, **detail)
+        self.record('outbox_pending', thread, req, outbox=out, delivery_kind=kind,
+                    **(dict(people=people) if people is not None else {}), **detail)
         for check in checks:
             self.record('preflight', thread, req, outbox=out, **check)
         return out
