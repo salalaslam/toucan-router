@@ -1189,8 +1189,8 @@ class App:
         route = next((r for r in self.cfg['routes'] if r['name'] == route_name), None)
         if not route:
             raise ValidationError('unknown route')
-        if thread != route['thread']:
-            raise Refused('send requires the route owner thread')
+        if thread != route['thread'] and thread not in route.get('send_threads', []):
+            raise Refused('send requires the route owner thread or a thread in its send_threads')
         if route.get('reply_to'):
             chat = reply_phone(self.cfg, route)
         elif chat is None:
