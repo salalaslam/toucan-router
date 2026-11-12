@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from . import cards, ledger, router, sources, t3
 from .config import GROUP, PHONE, Refused, ValidationError, hook_warning, prefixed, reply_phone, timestamp
-from .effects import Effects
+from .effects import Effects, local_run
 from .storage import account_warning, event, insert, private_dir
 
 OPEN = "('new','claimed','done')"
@@ -31,6 +31,10 @@ DOWNLOAD_FIELDS = ('local_path', 'download_status', 'http_status', 'download_err
 TAG = re.compile(r'@\[([^\[\]]*)\]')
 PING = re.compile(r'\s*ping[\s.!?]*', re.I)
 PING_WINDOW = 600  # a ping older than this when first seen gets no pong
+ACK_WINDOW = 2 * 3600  # a Teams message older than this gets no arrival reaction (a backlog after downtime)
+ACK_TRIES = 3  # failed or uncertain arrival reactions per message before giving up
+ACK_PER_SYNC = 3  # arrival reactions per sync; with ACK_TIMEOUT this bounds the delay to routing at 45 s
+ACK_TIMEOUT = 15  # seconds per toucan-bot call
 ANSWER_FOLLOWUP_SECONDS = 600  # an unquoted owner message this soon after a card's answer still adds to it
 
 
@@ -420,6 +424,8 @@ class App:
             self.db.execute("INSERT OR REPLACE INTO meta VALUES ('last_sync',?)", (str(now),))
             self.record('sync', ingested=report['ingested'], created=len(report['created']), dry=self.dry)
         self.flush_notices(report['problems'])
+        # Before the router stage: people see the reaction within a sync of their message arriving.
+        report['acks'] = self.ack_arrivals(self.fx.now(), report['problems'])
         # After the transaction: router commands can take seconds, and wakes have already gone out.
         try:
             report['router'] = router.run(self, now)
@@ -1202,6 +1208,53 @@ class App:
         if result.returncode:
             raise RuntimeError('toucan-bot react failed; inspect request log')
         return dict(request=req, **detail)
+
+    def ack_arrivals(self, now, problems):
+        """Put settings.ack_emoji on each new requester message in a Teams act route that posts as the bot,
+        so the person sees it was picked up before an owner thread claims it. One reaction per message
+        (split parts share it). A message that ever had this reaction added or removed is left alone, so a
+        reaction the owner took off on done is not put back. Failed or uncertain calls retry on later syncs."""
+        emoji = self.settings['ack_emoji']
+        names = [r['name'] for r in self.cfg['routes']
+                 if r['source'] == 'teams' and r['mode'] == 'act' and r.get('post_as_bot')]
+        if not emoji or not names or self.dry or self.shadow:
+            return []
+        rows = self.rows(
+            "SELECT r.id,r.thread,r.reply_chat,r.message_id,m.msg_id FROM requests r JOIN messages m ON m.id=r.message_id "
+            f"WHERE r.reply_source='teams' AND r.mode='act' AND r.route IN ({','.join('?' * len(names))}) "
+            "AND r.state IN ('new','held','claimed','escalated') AND m.deleted=0 AND m.is_owner=0 AND m.ts>=? ORDER BY r.id",
+            (*names, now - ACK_WINDOW))
+        done, messages = [], set()
+        for row in rows:
+            if len(done) >= ACK_PER_SYNC:
+                break
+            if row['message_id'] in messages:
+                continue  # split parts of one message share one reaction
+            messages.add(row['message_id'])
+            detail = dict(conversation_id=row['reply_chat'], message_id=row['msg_id'], emoji=emoji, removed=False)
+            seen = [json.loads(e['detail_json']) | dict(kind=e['kind']) for e in self.db.execute(
+                "SELECT kind,detail_json FROM events WHERE kind IN ('reaction_added','reaction_removed','reaction_failed',"
+                "'reaction_uncertain') AND request_id IN (SELECT id FROM requests WHERE message_id=?)", (row['message_id'],))]
+            seen = [e for e in seen if all(e.get(k) == detail[k] for k in ('conversation_id', 'message_id', 'emoji'))]
+            if any(e['kind'] in ('reaction_added', 'reaction_removed') for e in seen):
+                continue
+            if len(seen) >= ACK_TRIES:
+                problems[f'ack:{row["message_id"]}'] = (f'{row["thread"]}: request {row["id"]} has no {emoji} reaction '
+                                                        f'after {ACK_TRIES} tries; Teams bot may be down')
+                continue
+            with self.transaction():
+                self.record('reaction_pending', row['thread'], row['id'], arrival=True, **detail)
+            argv = ['toucan-bot', '--json', 'react', '--conversation', row['reply_chat'], '--message', row['msg_id'], '--emoji', emoji]
+            try:
+                result = local_run(self.fx, argv, timeout=ACK_TIMEOUT)
+                kind = 'reaction_failed' if result.returncode else 'reaction_added'
+                extra = {'error': (result.stderr or '')[:2000]} if result.returncode else {}
+            except Exception as error:
+                kind, extra = 'reaction_uncertain', {'error': type(error).__name__}
+            with self.transaction():
+                self.record(kind, row['thread'], row['id'], arrival=True, **detail, **extra)
+            done.append(dict(request=row['id'], result=kind))
+        return done
 
     def reacted(self, message_id, detail):
         """Whether the bot's reaction is already on that message, added for any request on the same message."""

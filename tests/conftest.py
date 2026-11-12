@@ -68,6 +68,7 @@ class World:
         # Intentionally omit the configured LID alias: the session map must resolve it.
         example = example.replace(f'whatsapp = ["{PHONE}", "{LID}"]', f'whatsapp = ["{PHONE}"]')
         self.config_path = root / 'toucan.toml'
+        example = example.replace('ack_emoji = "eyes"', 'ack_emoji = ""')  # tests of arrival reactions turn it on
         example = example.replace('# owner_teams_id = "00000000-0000-0000-0000-000000000000"', 'owner_teams_id = "owner-entra"')
         example = example.replace('owner_whatsapp = ""', f'owner_whatsapp = "{OWNER}"')
         example = example.replace('owner_name = "the owner"', 'owner_name = "Example Owner"\nalert_url = "http://127.0.0.1:8090/alerts"')
