@@ -120,6 +120,24 @@ If you answer in the T3 thread instead, the thread runs `toucan resume REQ --thr
 finds what you typed in that thread after the escalation, claims the request and prints your
 messages.
 
+To answer from a separate personal T3 thread, add its ID to `settings.owner_t3_threads`
+(default `[]`), then run:
+
+```sh
+toucan answer T435 B --thread T3_THREAD_ID --note 'Owner chose to wait'
+```
+
+The card must be open and the option must be one of its letters. Toucan reads T3 history
+read-only and requires evidence after the card was created or last reopened: a message with
+role `user` and `createdBy = "user"` containing the card ID or chosen option text, or a
+resolved `user_input` picker response whose answer contains the chosen option text. A picker
+answer letter also counts when its question names the card. Agent relays and the command's
+note never count as evidence. Missing history or an unsupported schema fails closed.
+The answer reaches the owning thread's inbox, returns the request to `new`, and removes the
+card from the digest. `toucan log` records the owner, source `t3:<thread>`, option, note and
+evidence record ID. This trusts T3's user provenance and the local configuration; it does
+not authenticate against agents that can rewrite those files.
+
 ## Rate limits and the fallback thread
 
 Each sync reads the latest run and message of every owner thread from T3. When the latest

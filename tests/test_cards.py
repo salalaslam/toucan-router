@@ -1,4 +1,5 @@
 """Decision cards: the escalation gate, answers by card ID, "more", the daily list and re-triage."""
+import json
 import sqlite3
 import subprocess
 
@@ -295,3 +296,99 @@ def test_an_unquoted_message_long_after_the_answer_does_not_reach_that_card(worl
     world.advance(60 * 60)
     assert not owner_says(world, 'later', '360.8').get('answers')
     assert stored_answer(world, req) == ['A) Yes, release now', 'and tell Alice first']
+
+
+OWNER_THREAD = '00000000-0000-0000-0000-000000000002'
+
+
+def picker_answer(world, req, choice, status='resolved'):
+    from datetime import datetime, timezone
+    at = datetime.fromtimestamp(world.now + 1, timezone.utc).isoformat()
+    with sqlite3.connect(world.paths.t3) as db:
+        db.execute('CREATE TABLE IF NOT EXISTS orchestration_v2_projection_runtime_requests '
+                   '(runtime_request_id TEXT,thread_id TEXT,kind TEXT,status TEXT,resolved_at TEXT,payload_json TEXT)')
+        db.execute('INSERT INTO orchestration_v2_projection_runtime_requests VALUES (?,?,?,?,?,?)',
+                   ('picker', OWNER_THREAD, 'user_input', status, at,
+                    json.dumps(dict(answers={f'T{req}: Release?': choice}))))
+
+
+@pytest.mark.parametrize('evidence', ['message', 'label', 'picker', 'picker-letter'])
+def test_t3_answer_reaches_inbox_and_leaves_digest(world, evidence, monkeypatch, capsys):
+    world.seed()
+    req, _ = escalate(world)
+    world.cfg['settings']['owner_t3_threads'] = [OWNER_THREAD]
+    if evidence.startswith('picker'):
+        picker_answer(world, req, 'B' if evidence == 'picker-letter' else 'B) Wait for PR 110')
+    else:
+        world.t3('decision', world.now + 1, f'T{req} B' if evidence == 'message' else 'Wait for PR 110', thread=OWNER_THREAD)
+    world.advance(2)
+    from toucan.cli import main
+    world.config_path.write_text(world.config_text.replace('owner_t3_threads = []',
+                                                         f'owner_t3_threads = ["{OWNER_THREAD}"]'))
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    assert main(['answer', f'T{req}', 'B', '--thread', OWNER_THREAD, '--note', 'Chosen in the owner thread',
+                 '--json'], effects=world.fx, paths=world.paths) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['card'] == f'T{req}' and world.app.get(req)['state'] == 'new'
+    assert stored_answer(world, req) == ['B) Wait for PR 110']
+    inbox = world.app.inbox('project-a')
+    assert any(m['answers_request'] == req and m['text'] == 'B) Wait for PR 110' for m in inbox)
+    assert world.app.digest()['waiting'] == []
+    event = world.app.rows("SELECT detail_json FROM events WHERE kind='owner_answered'")[-1]
+    detail = json.loads(event['detail_json'])
+    assert detail['source'] == f't3:{OWNER_THREAD}' and detail['option'] == 'B'
+    assert detail['note'] == 'Chosen in the owner thread' and detail['who'] == 'owner'
+    with pytest.raises(Refused, match='not open'):
+        world.app.answer(f'T{req}', 'B', OWNER_THREAD, '')
+    assert len(stored_answer(world, req)) == 1
+
+
+@pytest.mark.parametrize('case', ['not-allowed', 'unknown', 'closed', 'invalid', 'no-evidence',
+                                  'old', 'relay', 'assistant', 'wrong-card', 'wrong-choice', 'cancelled'])
+def test_t3_answer_refusals_do_not_change_the_card(world, case):
+    world.seed()
+    req, _ = escalate(world)
+    world.cfg['settings']['owner_t3_threads'] = [] if case == 'not-allowed' else [OWNER_THREAD]
+    card, option = f'T{req}', 'B'
+    if case == 'unknown':
+        card = 'T999999'
+    if case == 'closed':
+        world.db.execute('UPDATE cards SET closed_at=?', (world.now,))
+    if case == 'invalid':
+        option = 'C'
+    if case in ('wrong-choice', 'cancelled'):
+        picker_answer(world, req, 'A) Yes, release now' if case == 'wrong-choice' else 'B) Wait for PR 110',
+                      status='cancelled' if case == 'cancelled' else 'resolved')
+    elif case != 'no-evidence':
+        world.t3('decision', world.now - 1 if case == 'old' else world.now + 1,
+                 f'T{req}0 B' if case == 'wrong-card' else f'T{req} B', thread=OWNER_THREAD,
+                 created_by='agent' if case == 'relay' else 'user', role='assistant' if case == 'assistant' else 'user')
+    world.advance(2)
+    with pytest.raises(Refused):
+        world.app.answer(card, option, OWNER_THREAD, 'Agent note is not evidence')
+    assert stored_answer(world, req) == [] and world.app.get(req)['state'] == 'escalated'
+
+
+def test_t3_answer_cannot_reuse_evidence_when_the_same_card_reopens(world):
+    world.seed()
+    req, _ = escalate(world)
+    world.cfg['settings']['owner_t3_threads'] = [OWNER_THREAD]
+    world.t3('first', world.now + 1, f'T{req} B', thread=OWNER_THREAD)
+    world.advance(2)
+    world.app.answer(f'T{req}', 'B', OWNER_THREAD, '')
+    world.advance(2)
+    world.app.escalate(req, world.app.claim([req], 'project-a'), **CARD)
+    with pytest.raises(Refused, match='no matching'):
+        world.app.answer(f'T{req}', 'A', OWNER_THREAD, '')
+    assert world.app.digest()['waiting'] == [f'T{req}']
+
+
+def test_t3_answer_unavailable_history_fails_closed(world):
+    world.seed()
+    req, _ = escalate(world)
+    world.cfg['settings']['owner_t3_threads'] = [OWNER_THREAD]
+    with sqlite3.connect(world.paths.t3) as db:
+        db.execute('DROP TABLE orchestration_v2_projection_messages')
+    with pytest.raises(Refused, match='no matching'):
+        world.app.answer(f'T{req}', 'B', OWNER_THREAD, 'Owner chose B')
+    assert world.app.digest()['waiting'] == [f'T{req}']

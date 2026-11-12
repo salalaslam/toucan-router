@@ -1117,6 +1117,47 @@ class App:
                 self.record('claimed', thread, req['id'], claim_id=claim_id)
             return claim_id
 
+    def answer(self, card_id, option, thread, note):
+        """Record an owner's independently verified answer from an allow-listed T3 thread."""
+        if thread not in self.settings['owner_t3_threads']:
+            raise Refused('source thread is not in settings.owner_t3_threads')
+        option = option.strip().upper()
+        if not re.fullmatch(r'T[1-9]\d*(?:-[1-9]\d*)?', card_id, re.I):
+            raise Refused('unknown card')
+        req = int(card_id[1:].split('-')[0])
+        with self.transaction():
+            card = self.open_card(req)
+            if not card or cards.label(card).lower() != card_id.lower():
+                raise Refused('unknown card or card is not open')
+            row = self.get(req)
+            if card['answered_at'] is not None or row['state'] != 'escalated':
+                raise Refused('card is not open for an answer')
+            options = json.loads(card['options_json'])
+            index = cards.LETTERS.find(option) if len(option) == 1 else -1
+            if index < 0 or index >= len(options):
+                raise Refused('option must be one of the card option letters')
+            # A repeated escalation can reopen the same card; old evidence must not answer it again.
+            updated = self.db.execute("SELECT max(ts) FROM events WHERE request_id=? "
+                                      "AND kind IN ('card_updated','card_held')", (req,)).fetchone()[0]
+            evidence = t3.answer_evidence(self.paths, thread, max(card['created_at'], updated or 0),
+                                         cards.label(card), option, options[index])
+            if not evidence:
+                raise Refused('no matching owner message or resolved picker answer after the card was created')
+            now = self.fx.now()
+            text = f'{option}) {options[index]}'
+            message = insert(self.db, 'messages', source='t3', account='owner', chat=thread,
+                             msg_id=f'card:{card["id"]}:{evidence["kind"]}:{evidence["id"]}', route=row['route'],
+                             sender_key='owner', sender_raw='owner', sender_name=self.settings['owner_name'],
+                             is_owner=1, ts=now, text=text, own_text=text, attachments_json='[]',
+                             edited=0, deleted=0, first_seen=now, last_seen=now)
+            insert(self.db, 'owner_answers', message_id=message, request_id=req)
+            self.db.execute('UPDATE cards SET answered_at=?,answered_by=? WHERE id=?', (now, 'owner', card['id']))
+            self.db.execute("UPDATE requests SET state='new',claim_id=NULL,claimed_at=NULL,done_at=NULL,closed_at=NULL,"
+                            "close_reason=NULL,change_pending=0,wakes=0,last_wake_at=NULL WHERE id=?", (req,))
+            self.record('owner_answered', row['thread'], req, who='owner', source=f't3:{thread}',
+                        card=cards.label(card), option=option, note=note, evidence=evidence)
+            return dict(card=cards.label(card), request=req, option=option, source=f't3:{thread}', evidence=evidence)
+
     def resume(self, req, thread):
         """Hand an escalated request back when the owner answered in the owning T3 thread instead of on WhatsApp."""
         if thread not in self.cfg['threads']:

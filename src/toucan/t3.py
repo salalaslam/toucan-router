@@ -64,6 +64,40 @@ def owner_said(paths, thread_id, since):
         return None
 
 
+def answer_evidence(paths, thread_id, since, card, option, label):
+    """Only user-authored messages or resolved picker responses count, never agent text."""
+    contains = lambda text, value: bool(re.search(r'(?<!\w)' + re.escape(value) + r'(?![\w-])', text, re.I))
+    for message in reversed(owner_said(paths, thread_id, since) or []):
+        if contains(message['text'], card) or contains(message['text'], label):
+            return dict(kind='message', id=message['id'])
+    try:
+        db = readonly(paths.t3)
+        try:
+            rows = db.execute("SELECT runtime_request_id,resolved_at,payload_json "
+                              "FROM orchestration_v2_projection_runtime_requests "
+                              "WHERE thread_id=? AND kind='user_input' AND status='resolved' "
+                              "ORDER BY resolved_at DESC", (thread_id,)).fetchall()
+        finally:
+            db.close()
+        for row in rows:
+            if timestamp(row['resolved_at']) <= since:
+                continue
+            answers = json.loads(row['payload_json']).get('answers', {})
+            if not isinstance(answers, dict):
+                continue
+            for question, values in answers.items():
+                for value in values if isinstance(values, list) else [values]:
+                    if not isinstance(value, str):
+                        continue
+                    # The question alone cannot prove which option the owner selected.
+                    if (contains(value, label) or contains(question, card) and
+                            re.fullmatch(re.escape(option) + r'(?:[).:] .*)?', value.strip(), re.I)):
+                        return dict(kind='picker', id=row['runtime_request_id'])
+    except (OSError, sqlite3.Error, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
 def hook_info(url):
     """Only the task ID and origin are safe to show; discard the token."""
     try:
