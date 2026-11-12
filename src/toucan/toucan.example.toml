@@ -1,5 +1,6 @@
 [settings]
 owner_name = "the owner"
+owner_t3_threads = []  # T3 thread IDs where the owner answers decision cards
 timezone = "UTC"
 upload_command = "toucan-upload-loom"  # Loom requires toucan-router-tools
 # alert_url = "https://alerts.example.com/topic"

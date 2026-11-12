@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 DEFAULTS = dict(rewake_minutes=15, wake_gap_minutes=2, max_wakes=3, claimed_stale_hours=4,
                 done_unclosed_minutes=30, whatsapp_stale_minutes=120, rate_per_hour=20,
                 context_hours=24, ack_alert_minutes=5, fallback_minutes=5, rotate_tokens=200000,
-                rotate_stall_minutes=60, owner_whatsapp='', drafts_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
+                rotate_stall_minutes=60, owner_t3_threads=(), owner_whatsapp='', drafts_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
                 alert_url_file='', upload_command='toucan-upload-loom', transcribe='', followup_minutes=120,
                 router_general_thread='', router_commands=(), router_timeout_seconds=60, router_history=20,
                 router_budget_seconds=90, router_hold_minutes=5, router_ask_minutes=15, max_bounces=2, thread_rules='', pause_file='', ack_emoji='eyes')
@@ -35,7 +35,7 @@ SOURCE_DEFAULTS = dict(whatsapp=dict(store='~/.local/state/wacli', account='wa',
                        email=dict(notmuch_config='', stale_minutes=60))
 TEXT_SETTINGS = {'owner_whatsapp', 'drafts_whatsapp', 'owner_teams_id', 'owner_name', 'timezone', 'alert_url', 'alert_url_file', 'upload_command', 'transcribe', 'ntfy',
                  'router_general_thread', 'thread_rules', 'pause_file', 'ack_emoji'}
-LIST_SETTINGS = {'router_commands'}
+LIST_SETTINGS = {'router_commands', 'owner_t3_threads'}
 
 
 class ValidationError(ValueError):
@@ -103,6 +103,9 @@ def validate(cfg):
     for key in TEXT_SETTINGS & settings.keys():
         if not isinstance(settings[key], str):
             raise ValidationError(f'settings.{key} must be text')
+    threads = settings['owner_t3_threads']
+    if not isinstance(threads, (list, tuple)) or any(not isinstance(t, str) or not t.strip() for t in threads):
+        raise ValidationError('settings.owner_t3_threads must be an array of nonempty thread IDs')
     commands = settings['router_commands']
     if (not isinstance(commands, (list, tuple)) or
             any(not isinstance(c, list) or not c or any(not isinstance(a, str) or '\0' in a for a in c) or not c[0] for c in commands)):

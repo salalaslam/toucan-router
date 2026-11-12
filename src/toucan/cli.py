@@ -44,7 +44,7 @@ def pause_note(app, pause):
 def parser():
     p = argparse.ArgumentParser(prog='toucan')
     commands = p.add_subparsers(dest='command', required=True)
-    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'rotate', 'init', 'doctor', 'upload', 'forward', 'bounce', 'digest', 'retriage'):
+    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'answer', 'rotate', 'init', 'doctor', 'upload', 'forward', 'bounce', 'digest', 'retriage'):
         sub = commands.add_parser(name)
         sub.add_argument('--json', action='store_true')
         if name in ('check-config', 'doctor'):
@@ -59,7 +59,7 @@ def parser():
         if name == 'upload':
             sub.add_argument('file')
             sub.add_argument('--title')
-        if name in ('inbox', 'claim', 'wait', 'resume', 'send', 'rotate', 'forward', 'bounce'):
+        if name in ('inbox', 'claim', 'wait', 'resume', 'answer', 'send', 'rotate', 'forward', 'bounce'):
             sub.add_argument('--thread', required=True)
         elif name in ('release', 'done', 'reply', 'react', 'close', 'escalate', 'log'):
             sub.add_argument('--thread')
@@ -67,6 +67,10 @@ def parser():
             sub.add_argument('--rules', action='store_true', help='print the standing rules in full even if unchanged')
         if name == 'claim':
             sub.add_argument('requests', type=int, nargs='+')
+        elif name == 'answer':
+            sub.add_argument('card')
+            sub.add_argument('option')
+            sub.add_argument('--note', required=True)
         elif name == 'resume':
             sub.add_argument('request', type=int)
         elif name == 'forward':
@@ -395,6 +399,8 @@ def dispatch(args, app):
         return '\n\n'.join(blocks)
     if c == 'claim':
         return dict(claim_id=app.claim(args.requests, args.thread))
+    if c == 'answer':
+        return app.answer(args.card, args.option, args.thread, args.note)
     if c == 'resume':
         return app.resume(args.request, args.thread)
     if c == 'react':
