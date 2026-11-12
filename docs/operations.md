@@ -630,7 +630,19 @@ and generation in one transaction; confirmation must match the current generatio
 Older confirmations paired with a different generation remain unavailable until refreshed.
 Status reports per-chat failures in `roster.errors`; doctor warns in `teams.roster`.
 The refresh pass processes every chat before reporting any failure to its supervisor,
-which retries with backoff rather than reporting success and waiting the full roster interval.
+which retries transient failures with backoff. A Connector 404 means the stored conversation
+is unavailable. Its aliases remain invalid, its history stays intact, and it is checked
+again at the normal roster interval without failing the entire sweep. Logs identify the
+conversation, HTTP status and exception class without printing credentials or response bodies.
+
+The bot pins the Teams API and common HTTP packages to the tested 2.1.1 SDK family.
+Bot send and reaction commands have a 25-second deadline covering initialization, token
+acquisition, delivery and retries. A send succeeds only with a real Connector activity ID;
+missing IDs and the SDK placeholder are ambiguous. Reactions succeed on the Connector's
+successful response, which supplies no new activity ID. Exit 4 means the request may have
+landed, so inspect the chat before retrying. Setup timeouts and timeouts while waiting to
+retry a definitive rejection fail with exit 1. The receipt confirms Connector acceptance;
+it does not independently confirm that Graph or a Teams client can display the message.
 
 Screenshot files expire after `media_retention_days`, default 30, during bot maintenance.
 Local expiry also runs after credentials are removed, while the bot server is running.
