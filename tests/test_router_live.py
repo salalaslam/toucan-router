@@ -691,3 +691,14 @@ def test_migration_moves_requests_held_in_state_new_to_held(tmp_path):
     assert [tuple(r) for r in db.execute('SELECT id,state,routing,route_gen FROM requests ORDER BY id')] == [
         (1, 'held', 'pending', 0), (2, 'held', 'asked', 0), (3, 'new', None, 0), (4, 'claimed', None, 0)]
     db.close()
+
+
+def test_split_parts_get_one_arrival_reaction(world):
+    live(world, [answer(**SPLIT)]).seed()
+    bot_route(world)
+    world.cfg['settings']['ack_emoji'] = 'eyes'
+    world.team('t1', text='fix the portal and rerun billing')
+    world.app.sync()
+    world.advance(60)
+    world.app.sync()
+    assert [s[2:] for s in world.sends if s[2] == 'react'] == [['react', '--conversation', 'group:chat', '--message', 't1', '--emoji', 'eyes']]
