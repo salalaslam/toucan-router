@@ -230,3 +230,87 @@ def test_cli_send_refuses_tags_it_cannot_resolve_before_sending(send_environment
     sent = capture_sends(monkeypatch)
     assert cli.main(['send', '--conversation', 'chat', '--text', f'Hi @[{tag}]']) == 2
     assert sent == [] and error in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('receipt', [None, '', 'DO_NOT_USE_PLACEHOLDER_ID'])
+def test_send_without_a_real_receipt_is_never_success(send_environment, monkeypatch, receipt):
+    class App:
+        def __init__(self, **kwargs):
+            pass
+        async def initialize(self):
+            pass
+        async def send(self, *args, **kwargs):
+            return type('Sent', (), {'id': receipt})()
+    monkeypatch.setattr(microsoft_teams.apps, 'App', App)
+    assert cli.main(['send', '--conversation', 'chat', '--text', 'hello']) == 4
+
+
+@pytest.mark.parametrize('operation', ['send', 'react'])
+@pytest.mark.parametrize('phase,expected', [('initialize', 1), ('token', 1), ('dispatch', 4), ('retry', 1)])
+def test_delivery_deadline_distinguishes_dispatch_from_setup_and_rejected_retries(
+        send_environment, monkeypatch, operation, phase, expected):
+    from types import SimpleNamespace
+    import time
+    calls = []
+    async def hang():
+        await asyncio.Event().wait()
+    class App:
+        def __init__(self, **kwargs):
+            self.token_provider = SimpleNamespace(get_app_token=self.token)
+            self.api = SimpleNamespace(from_service_url=lambda url: SimpleNamespace(
+                conversations=SimpleNamespace(add_reaction=self.send)))
+        async def initialize(self):
+            if phase == 'initialize':
+                await hang()
+        async def token(self):
+            if phase == 'token':
+                await hang()
+            return 'test-token'
+        async def send(self, *args, **kwargs):
+            calls.append(1)
+            if phase == 'retry':
+                request = httpx.Request('POST', 'https://smba.example.com')
+                raise httpx.HTTPStatusError('rejected', request=request,
+                                            response=httpx.Response(401, request=request))
+            await hang()
+    monkeypatch.setattr(microsoft_teams.apps, 'App', App)
+    monkeypatch.setattr(cli, 'OPERATION_TIMEOUT', .02)
+    args = ['--text', 'hello'] if operation == 'send' else ['--message', 'm1', '--emoji', 'eyes']
+    started = time.monotonic()
+    assert cli.main([operation, '--conversation', 'chat', *args]) == expected
+    assert time.monotonic() - started < 1
+    assert len(calls) == (1 if phase in ('dispatch', 'retry') else 0)
+
+
+@pytest.mark.parametrize('receipt,expected', [('activity-1', 0), (None, 4), ('malformed', 4)])
+def test_real_sdk_send_uses_cancellable_auth_and_requires_connector_receipt(
+        send_environment, monkeypatch, receipt, expected):
+    import base64
+    import json
+    import time
+    from urllib.parse import parse_qs
+    requests = []
+    def encoded(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip('=')
+    token = encoded({'alg': 'none'}) + '.' + encoded({'exp': int(time.time()) + 3600}) + '.'
+    def handler(request):
+        requests.append(request)
+        if request.url.host == 'login.microsoftonline.com':
+            form = parse_qs(request.content.decode())
+            assert form['scope'] == ['https://api.botframework.com/.default']
+            assert form['client_id'] == [CREDS.client_id]
+            return httpx.Response(200, json={'access_token': token})
+        assert request.method == 'POST'
+        assert str(request.url) == 'https://smba.example.com/v3/conversations/chat/activities'
+        assert request.headers['Authorization'] == 'Bearer ' + token
+        if receipt == 'malformed':
+            return httpx.Response(201, content=b'not JSON')
+        return httpx.Response(201, json={'id': receipt} if receipt else {})
+    async def send_http(self, request, **kwargs):
+        response = handler(request)
+        response.request = request
+        return response
+    # Patch the shared class method, including SDK modules that import an alias.
+    monkeypatch.setattr(httpx.AsyncClient, 'send', send_http)
+    assert cli.main(['send', '--conversation', 'chat', '--text', 'hello']) == expected
+    assert len(requests) == 2

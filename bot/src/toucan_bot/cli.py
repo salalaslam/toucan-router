@@ -1,7 +1,7 @@
 """toucan-bot: run the Teams bot and post as Toucan.
 
 Exit codes: 0 success, 1 operational failure, 2 usage or missing setup,
-4 ambiguous send (may have been delivered; inspect before retrying).
+4 ambiguous send or reaction (may have landed; inspect before retrying).
 """
 
 from __future__ import annotations
@@ -29,9 +29,10 @@ def _print(rows, as_json: bool, fmt) -> None:
             print(fmt(r))
 
 
-# The Bot Connector sometimes answers 401 to a fresh token and accepts the same send seconds later.
+# The Bot Connector sometimes answers 401 to a fresh token and accepts a later attempt.
 # A 401 means nothing was posted, so retrying can't duplicate the message.
-RETRY_401_DELAYS = (3, 10, 30)
+RETRY_401_DELAYS = (3, 5, 5)
+OPERATION_TIMEOUT = 25
 REACTION_RETRIES = 3
 REACTION_ALIASES = {
     "eyes": "1f440_eyes",
@@ -50,16 +51,48 @@ def _is_401(e: Exception) -> bool:
 async def _with_app(creds: config.Credentials, what: str, call):
     from microsoft_teams.apps import App
 
-    for delay in (*RETRY_401_DELAYS, None):
-        app = App(client_id=creds.client_id, client_secret=creds.client_secret, tenant_id=config.app_tenant(creds))
-        await app.initialize()
-        try:
-            return await call(app)
-        except Exception as e:  # noqa: BLE001 - only a 401 is retried
-            if delay is None or not _is_401(e):
-                raise
-            print(f"toucan-bot: {what} got 401, retrying in {delay}s", file=sys.stderr)
-            await asyncio.sleep(delay)
+    cached_token = None
+
+    async def token(scope, tenant=None):
+        nonlocal cached_token
+        if cached_token is not None:
+            return cached_token
+        # MSAL runs blocking requests in executor threads. asyncio.run waits for
+        # those threads on exit even after cancellation, so use cancellable HTTP.
+        authority = config.app_tenant(creds) or 'botframework.com'
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f'https://login.microsoftonline.com/{authority}/oauth2/v2.0/token',
+                data={'grant_type': 'client_credentials', 'client_id': creds.client_id,
+                      'client_secret': creds.client_secret, 'scope': scope})
+            response.raise_for_status()
+            value = response.json().get('access_token')
+            if not value:
+                raise ValueError('Bot Connector token unavailable')
+            cached_token = value
+            return value
+
+    # One deadline covers initialization, token acquisition, retries and delivery.
+    async with asyncio.timeout(OPERATION_TIMEOUT):
+        for delay in (*RETRY_401_DELAYS, None):
+            app = App(client_id=creds.client_id, token=token, tenant_id=config.app_tenant(creds))
+            # Reject an environment secret overriding the explicit token provider.
+            if getattr(getattr(app, 'credentials', None), 'client_secret', None):
+                raise ValueError('CLIENT_SECRET environment override is unsupported for CLI delivery')
+            await app.initialize()
+            try:
+                # Acquire credentials before entering the potentially delivered phase.
+                # The SDK otherwise hides token acquisition inside send/react.
+                if hasattr(app, 'token_provider'):
+                    if await app.token_provider.get_app_token() is None:
+                        raise ValueError('Bot Connector token unavailable')
+                return await call(app)
+            except Exception as e:  # only a definitive rejection is safe to retry
+                if delay is None or not _is_401(e):
+                    raise
+                cached_token = None
+                print(f"toucan-bot: {what} got 401, retrying in {delay}s", file=sys.stderr)
+                await asyncio.sleep(delay)
 
 
 class UncertainSend(Exception):
@@ -86,19 +119,24 @@ async def _send(creds: config.Credentials, conversation_id: str, service_url: st
     async def call(app):
         try:
             sent = await app.send(conversation_id, activity, service_url=service_url)
+        except asyncio.CancelledError as error:
+            raise UncertainSend('send deadline exceeded after dispatch; inspect the chat before retrying') from error
         except Exception as error:
-            # Token acquisition happens inside app.send too. Its failures precede
-            # the connector POST and cannot have delivered the chat message.
+            # Token failures precede the connector POST. Only a connector
+            # transport failure or server error can leave delivery uncertain.
             request = getattr(error, 'request', None)
             connector = request is None or str(request.url).startswith(service_url.rstrip('/') + '/')
             status = getattr(getattr(error, 'response', None), 'status_code', None)
             before_send = isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
             if connector and not before_send and (
-                    isinstance(error, (httpx.TransportError, TimeoutError, ConnectionError)) or
+                    isinstance(error, (httpx.TransportError, TimeoutError, ConnectionError, json.JSONDecodeError)) or
                     status is not None and status >= 500):
                 raise UncertainSend('delivery uncertain; inspect the chat before sending again') from error
             raise
-        return getattr(sent, "id", None)
+        activity_id = getattr(sent, "id", None)
+        if not isinstance(activity_id, str) or not activity_id.strip() or activity_id == 'DO_NOT_USE_PLACEHOLDER_ID':
+            raise UncertainSend('Teams returned no activity ID; inspect the chat before retrying')
+        return activity_id
 
     return await _with_app(creds, "send", call)
 
@@ -133,9 +171,16 @@ async def _react(creds: config.Credentials, conversation_id: str, service_url: s
         while True:
             try:
                 return await react(conversation_id, activity_id, emoji)
-            except Exception as e:  # noqa: BLE001 - only a 429 is retried here
+            except asyncio.CancelledError as error:
+                raise UncertainSend('reaction deadline exceeded after dispatch; inspect the message before retrying') from error
+            except Exception as e:  # only a 429 is retried here
                 response = getattr(e, "response", None)
-                if getattr(response, "status_code", None) != 429 or retries >= REACTION_RETRIES:
+                status = getattr(response, "status_code", None)
+                before_send = isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+                if not before_send and (isinstance(e, (httpx.TransportError, TimeoutError, ConnectionError))
+                                        or status is not None and status >= 500):
+                    raise UncertainSend('reaction outcome uncertain; inspect the message before retrying') from e
+                if status != 429 or retries >= REACTION_RETRIES:
                     raise
                 retries += 1
                 delay = _retry_after(response)
@@ -171,7 +216,10 @@ def cmd_react(args) -> int:
     if not args.dry_run:
         try:
             asyncio.run(_react(creds, conv["id"], conv["service_url"], args.message, emoji, args.remove))
-        except Exception as e:  # noqa: BLE001 - report any reaction failure as operational
+        except UncertainSend as e:
+            print(f"toucan-bot: {e}", file=sys.stderr)
+            return 4
+        except Exception as e:  # definitive rejection or failure before dispatch
             status = getattr(getattr(e, "response", None), "status_code", None)
             reason = ("HTTP 403: bot cannot access this chat or message; check that it is still in the chat" if status == 403
                       else "HTTP 404: message or conversation no longer exists, or the bot is no longer in the chat" if status == 404

@@ -1027,3 +1027,24 @@ def test_missing_consent_backs_off_per_chat_until_success_or_a_sign_of_access(st
     run()
     row = con.execute("SELECT * FROM catchup WHERE conversation_id='chat'").fetchone()
     assert round(row['retry_at'] - clock[0]) == interval * 2  # success reset the doubling
+
+
+def test_missing_conversation_invalidates_alias_without_failing_sweep(state, caplog):
+    import logging
+    con, _ = state
+    store.upsert_conversation(con, id='gone', type='personal', name=None,
+                              service_url='https://smba.example.com', tenant_id=OWNER)
+    con.execute("INSERT INTO meta VALUES ('roster:gone','confirmed')")
+    con.execute("INSERT INTO meta VALUES ('roster_error:gone','HTTP 404')")
+    con.commit()
+    class Members:
+        def __init__(self, chat):
+            pass
+        async def get_all(self):
+            httpx.Response(404, request=httpx.Request('GET', 'https://smba.example.com/members')).raise_for_status()
+    app = SimpleNamespace(api=SimpleNamespace(from_service_url=lambda url: SimpleNamespace(
+        conversations=SimpleNamespace(members=Members))))
+    with caplog.at_level(logging.INFO, logger='toucan_bot'):
+        assert asyncio.run(catchup.roster(con, app, store.get_conversation(con, 'gone'))) is not False
+    assert not con.execute("SELECT 1 FROM meta WHERE key IN ('roster:gone','roster_error:gone')").fetchall()
+    assert 'conversation=gone HTTP 404: conversation not found' in caplog.text

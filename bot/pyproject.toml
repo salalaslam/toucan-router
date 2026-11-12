@@ -14,6 +14,8 @@ classifiers = ["Programming Language :: Python :: 3", "Programming Language :: P
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "microsoft-teams-apps==2.1.1",
+  "microsoft-teams-api==2.1.1",
+  "microsoft-teams-common==2.1.1",
   "pillow>=11",
 ]
 

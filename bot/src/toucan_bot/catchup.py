@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, unquote, urlencode, urlsplit
@@ -11,6 +12,8 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 import httpx
 
 from . import media, store
+
+log = logging.getLogger('toucan_bot')
 
 GRAPH = 'https://graph.microsoft.com/v1.0'
 BACKOFF_CAP = 900  # seconds; longest wait after a 401/403 in one chat
@@ -180,6 +183,22 @@ async def roster(con, app, chat):
         # Retain the member data but leave aliases unavailable after a failed
         # current fetch. Superseded failures must not overwrite newer health.
         log_status = getattr(getattr(error, 'response', None), 'status_code', None)
+        # A removed/stale conversation cannot be refreshed. Keep it for history,
+        # invalidate its aliases, and revisit on the normal hourly sweep.
+        if log_status == 404:
+            log.info('roster unavailable conversation=%s HTTP 404: conversation not found', chat['id'])
+            with con:
+                con.execute('BEGIN IMMEDIATE')
+                if con.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()[0] != generation:
+                    return
+                con.execute('DELETE FROM meta WHERE key=?', ('roster_error:' + chat['id'],))
+            return
+        # HTTP exception strings may include headers or response bodies. Log only
+        # the status and standard reason; never echo credentials or raw payloads.
+        detail = (httpx.codes.get_reason_phrase(log_status) if log_status
+                  else 'request timed out' if isinstance(error, TimeoutError) else 'member refresh failed')
+        log.warning('roster failed conversation=%s status=%s exception=%s: %s',
+                    chat['id'], log_status, type(error).__name__, detail)
         with con:
             con.execute('BEGIN IMMEDIATE')
             if con.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()[0] != generation:
