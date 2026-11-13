@@ -58,7 +58,7 @@ def render(text: str, mentions: list[Mention] = ()) -> str:
             marker = uuid4().hex
         text = text.replace(mention.text, marker)
         replacements[marker] = mention.text
-    rendered = MarkdownIt('commonmark', {'breaks': True, 'html': False, 'linkify': False}).render(text)
+    rendered = MarkdownIt('commonmark', {'breaks': True, 'html': False, 'linkify': True}).enable('linkify').render(text)
     for marker, mention in replacements.items():
         rendered = rendered.replace(marker, mention)
     # Use explicit HTML breaks throughout the activity. Keep code-block

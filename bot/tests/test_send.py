@@ -346,6 +346,8 @@ def test_cli_send_preserves_line_breaks_and_formatting(send_environment, monkeyp
 
 
 @pytest.mark.parametrize('text,expected', [
+    ('https://example.com/path?a=1&b=2',
+     '<p><a href="https://example.com/path?a=1&amp;b=2">https://example.com/path?a=1&amp;b=2</a></p>'),
     ('First\r\nSecond', '<p>First<br />Second</p>'),
     ('```\nfirst\nsecond\n```', '<pre><code>first&#10;second&#10;</code></pre>'),
     ('<script>alert(1)</script>', '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>'),

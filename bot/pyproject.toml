@@ -17,7 +17,7 @@ dependencies = [
   "microsoft-teams-api==2.1.1",
   "microsoft-teams-common==2.1.1",
   "pillow>=11",
-  "markdown-it-py>=3,<5",
+  "markdown-it-py[linkify]>=3,<5",
 ]
 
 [project.urls]
