@@ -61,8 +61,8 @@ def render(text: str, mentions: list[Mention] = ()) -> str:
     rendered = MarkdownIt('commonmark', {'breaks': True, 'html': False, 'linkify': False}).render(text)
     for marker, mention in replacements.items():
         rendered = rendered.replace(marker, mention)
-    # Even XML activities have raw newlines rewritten by the Connector. Keep
-    # whitespace inside code blocks as entities and omit HTML layout whitespace.
+    # Use explicit HTML breaks throughout the activity. Keep code-block
+    # whitespace as entities and omit HTML layout whitespace.
     rendered = re.sub(r"<pre>.*?</pre>", lambda m: m[0].replace("\n", "&#10;"), rendered, flags=re.S)
     return rendered.replace("\n", "")
 
