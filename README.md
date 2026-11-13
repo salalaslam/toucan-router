@@ -29,6 +29,8 @@ What it does:
 - Rotates T3 threads whose context gets large, and hands requests to a fallback thread on
   another provider while one is rate-limited.
 
+How it compares with Hermes Agent: [docs/hermes-comparison.md](docs/hermes-comparison.md).
+
 ## Requirements
 
 - Linux with systemd user services, Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/)
