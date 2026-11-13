@@ -44,7 +44,7 @@ def pause_note(app, pause):
 def parser():
     p = argparse.ArgumentParser(prog='toucan')
     commands = p.add_subparsers(dest='command', required=True)
-    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'answer', 'rotate', 'init', 'doctor', 'upload', 'forward', 'bounce', 'digest', 'retriage'):
+    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'answer', 'rotate', 'init', 'doctor', 'upload', 'forward', 'bounce', 'digest', 'retriage', 'pause', 'unpause'):
         sub = commands.add_parser(name)
         sub.add_argument('--json', action='store_true')
         if name in ('check-config', 'doctor'):
@@ -99,6 +99,13 @@ def parser():
             sub.add_argument('--note', default='', help='full context, sent only when the owner replies "more"')
         if name in ('digest', 'retriage'):
             sub.add_argument('--dry-run', action='store_true')
+        if name == 'pause':
+            sub.description = ('Stop routing: sync reads nothing and wakes no one, and the daily list is not sent, '
+                               'until `toucan unpause` or --until. Owner threads can still reply on requests they hold.')
+            sub.add_argument('--until', help='when routing starts again by itself: 30m, 2h, 1d or an ISO time')
+            sub.add_argument('--reason', default='', help='shown in `toucan status` and the log')
+        if name == 'unpause':
+            sub.description = 'Start routing again. The next sync catches up on messages that arrived during the pause.'
         if name == 'close':
             sub.add_argument('--reason', required=True)
         if name == 'sync':
@@ -431,6 +438,10 @@ def dispatch(args, app):
                            keep_open=args.keep_open, thread=args.thread, promise=args.promise, due=due, override=args.override)
     if c == 'digest':
         return app.digest()
+    if c == 'pause':
+        return app.pause_routing(args.until and moment(args.until, app.fx.now(), 1), args.reason)
+    if c == 'unpause':
+        return app.unpause_routing()
     if c == 'retriage':
         if app.dry:
             return dict(requests=[r['id'] for r in app.rows("SELECT r.id FROM requests r WHERE r.state='escalated' "
@@ -439,7 +450,8 @@ def dispatch(args, app):
     if c == 'import-pending':
         return dict(created=app.import_pending(args.route, timestamp(args.since)))
     if c == 'status':
-        return dict(router=router.health(app.db, app.cfg, app.fx.now()) if router.routes(app.cfg) else None,
+        return dict(paused=app.routing_pause(app.fx.now()),
+                    router=router.health(app.db, app.cfg, app.fx.now()) if router.routes(app.cfg) else None,
                     requests=app.rows("SELECT thread,state,count(*) AS count FROM requests WHERE state IN ('new','claimed','done','escalated') "
                                       'AND routing IS NULL GROUP BY thread,state'),
                     held=router.held_requests(app.db),

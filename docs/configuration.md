@@ -39,7 +39,7 @@ Secrets never go in this file. Webhook URLs live in hook files and the alert URL
 | `context_hours` | 24 | How much earlier chat history the inbox shows as context. |
 | `fallback_minutes` | 5 | Hand a rate-limited thread's unclaimed request to its fallback after this long. |
 | `rotate_tokens` | 200000 | Ask an owner thread to hand over to a fresh thread at this context size. A busy thread is asked too; its handover starts after the running turn. |
-| `pause_file` | none | A JSON file another tool writes to pause work, such as a quota guard. While it holds `"paused": true`, `toucan inbox` tells owner threads to keep answering people briefly and start no delegates or long work. Optional `since` and `until` (Unix seconds) and `reason` (text) are shown in the note. A missing or unreadable file means no pause. |
+| `pause_file` | none | A JSON file another tool writes to pause work, such as a quota guard. While it holds `"paused": true`, `toucan inbox` tells owner threads to keep answering people briefly and start no delegates or long work. Optional `since` and `until` (Unix seconds) and `reason` (text) are shown in the note. A missing or unreadable file means no pause. Routing carries on; to stop routing, use `toucan pause` (see operations). |
 | `rotate_stall_minutes` | 60 | Alert when a handover hasn't finished after this long. |
 | `router_general_thread` | none | Thread key that gets off-topic requests. Required once any route has `router` other than `"off"`. |
 | `router_commands` | `[]` | Commands the router tries in order, each an array such as `["claude", "-p"]`. Each reads the prompt on stdin and must print one JSON object. Empty means requests the rules can't place are decided as `router unavailable` (on a live route, the person is asked). |

@@ -112,7 +112,8 @@ toucan enable --json                 # writes and starts them, then runs doctor
 `enable` installs only the units the config needs: the sync timer always, `wacli sync` if
 WhatsApp is used and no wacli service is already running, and the Teams bot if a route uses
 Teams. It refuses to overwrite a unit file that already exists with different contents.
-`toucan disable` stops them.
+`toucan disable` stops them. To stop routing for a while without touching the units, use
+`toucan pause` and `toucan unpause`.
 
 Finish by showing the operator `toucan doctor` output and anything you skipped.
 
