@@ -134,6 +134,7 @@ One table per T3 owner thread. See [setup-t3.md](setup-t3.md).
 | `project` | no | Project key used to resolve escalation delegation. Other free text is allowed. |
 | `fallback` | no | Another thread key that takes requests while this one is rate-limited. |
 | `rotate_tokens` | no | Overrides `settings.rotate_tokens` for this thread. |
+| `waiter` | no | Default `true`. Set `false` for a thread whose turns stay short because it hands work to delegates (a desk). `toucan inbox` then stops asking it to start `toucan wait`, and `toucan setup-prompt` leaves that step out. `toucan add thread KEY --no-waiter` sets it. See [operations](operations.md#waiting-for-requests). |
 
 ## `[projects.KEY]`
 

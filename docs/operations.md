@@ -67,6 +67,13 @@ background command. It exits as soon as the thread has a new or changed request,
 reaches the agent mid-turn, and the agent starts it again. It times out after 110 minutes
 (`--timeout`). `inbox` warns when no waiter is running and `status` lists waiters.
 
+A thread whose turns stay short doesn't need a waiter: a desk that claims each request,
+acknowledges it and hands the work to a delegate is free again within a minute or two, so
+webhook wakes reach it without waiting long. Set `waiter = false` on that thread
+([configuration](configuration.md#threadskey)) and `inbox` stops asking for one. If such a
+thread does long work itself, new requests wait until that turn ends; the unclaimed-request
+alert still fires.
+
 ## Escalations
 
 An escalation reaches you only as a decision card, and only for what you alone can decide:

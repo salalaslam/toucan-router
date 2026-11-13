@@ -146,6 +146,7 @@ def test_send_failure_is_recorded_and_returns_operational_exit(world, send_cli, 
     ('source = "teams"', 'source = "teams"\npost_as_bot = "yes"', 'post_as_bot'),
     ('source = "whatsapp"', 'source = "whatsapp"\nowner_reply_closes = true', 'owner_reply_closes'),
     ('[threads.project-a]\n', '[threads.project-a]\nfallback = "project-a"\n', 'fallback must be another'),
+    ('[threads.project-a]\n', '[threads.project-a]\nwaiter = "no"\n', 'waiter must be true or false'),
     ('source = "whatsapp"', 'source = "whatsapp"\nreply_to = "missing"', 'reply_to'),
     ('chats = ["group:chat"]', 'chats = ["group:chat"]\nreply_to = "other"', 'only on WhatsApp act routes'),
     ('source = "whatsapp"', 'source = "whatsapp"\nreply_prefix = 1', 'reply_prefix'),
@@ -283,6 +284,19 @@ def test_wait_returns_when_a_request_arrives_mid_wait(world, monkeypatch, capsys
     capsys.readouterr()
     assert invoke(['wait', '--thread', 'project-a', '--timeout', '1', '--json']) == 0
     assert json.loads(capsys.readouterr().out)['fired'] is False  # seen in the inbox: no repeat
+
+
+def test_inbox_skips_the_waiter_prompt_for_a_thread_with_waiter_off(world, monkeypatch, capsys):
+    # A desk thread keeps its turns short, so webhook wakes reach it without a background waiter.
+    world.config_path.write_text(world.config_text.replace('[threads.project-a]\n', '[threads.project-a]\nwaiter = false\n', 1))
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    monkeypatch.setenv('TOUCAN_DB', str(world.db_path))
+    world.seed()
+    invoke = lambda argv: main(argv, effects=world.fx, paths=world.paths)
+    assert invoke(['inbox', '--thread', 'project-a']) == 0
+    assert 'toucan wait' not in capsys.readouterr().out
+    assert invoke(['inbox', '--thread', 'project-a', '--json']) == 0
+    assert json.loads(capsys.readouterr().out)['waiter_running'] is False
 
 
 def test_inbox_prints_standing_rules_for_the_thread(world, monkeypatch, capsys):

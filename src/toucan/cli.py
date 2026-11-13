@@ -194,6 +194,8 @@ def parser():
             for flag in ('project', 'fallback', 't3-thread'):
                 sub.add_argument('--' + flag)
             sub.add_argument('--rotate-tokens', type=int)
+            sub.add_argument('--no-waiter', dest='waiter', action='store_false', default=None,
+                             help='short-turn thread that hands work to delegates: inbox stops asking for `toucan wait`')
         else:
             sub.add_argument('--source', required=True, choices=('whatsapp', 'teams', 'email'))
             for flag in ('chat', 'requester'):
@@ -333,7 +335,8 @@ def dispatch(args, app):
             blocks.append('Standing rules for this thread, from the owner\'s config:\n\n' + '\n\n'.join(rules))
         elif rules:
             blocks.append(f'Standing rules unchanged since you last saw them; `toucan inbox --thread {args.thread} --rules` prints them again.')
-        if not waiting:
+        # A thread whose turns stay short (a desk that hands work to delegates) sets waiter = false.
+        if not waiting and app.cfg['threads'][args.thread].get('waiter', True):
             blocks.append(f'No `toucan wait --thread {args.thread}` is running. Start it now as a background command '
                           '(it exits when a new request arrives, even mid-task), and start it again each time it exits.')
         owner = app.settings['owner_whatsapp']
@@ -536,7 +539,7 @@ def agent_command(args, effects, paths):
         if args.kind == 'person':
             names = ('name', 'role', 'whatsapp', 'teams_id', 'email')
         elif args.kind == 'thread':
-            names = ('project', 'fallback', 't3_thread', 'rotate_tokens')
+            names = ('project', 'fallback', 't3_thread', 'rotate_tokens', 'waiter')
         elif args.kind == 'project':
             names = ('name', 'aliases', 'description', 'thread')
         else:
