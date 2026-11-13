@@ -100,11 +100,9 @@ class UncertainSend(Exception):
 
 
 def _activity(text: str, image: outbound.Prepared | None, mentions: list[outbound.Mention] = ()):
-    if image is None and not mentions:
-        return text
     from microsoft_teams.api import Account, Attachment, MentionEntity, MessageActivityInput
 
-    activity = MessageActivityInput(text=text)
+    activity = MessageActivityInput(text=outbound.render(text, mentions), text_format="xml")
     if image is not None:
         activity.add_attachments(Attachment(content_type=image.content_type, content_url=image.data_uri(), name=image.name))
     for m in mentions:

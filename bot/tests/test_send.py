@@ -165,7 +165,7 @@ def test_cli_send_posts_a_resized_inline_image_with_caption(send_environment, mo
     sent = capture_sends(monkeypatch)
     assert cli.main(['send', '--conversation', 'chat', '--image', str(path), '--text', 'The new page']) == 0
     body = sent[0].model_dump(by_alias=True, exclude_none=True)
-    assert body['text'] == 'The new page'
+    assert body['text'] == '<p>The new page</p>'
     [attachment] = body['attachments']
     assert attachment['contentType'] == 'image/png'
     header, data = attachment['contentUrl'].split(',', 1)
@@ -216,7 +216,7 @@ def test_cli_send_turns_entra_tags_into_teams_mentions(send_environment, monkeyp
     sent = capture_sends(monkeypatch)
     assert cli.main(['send', '--conversation', 'chat', '--text', f'@[{ALICE_AAD}] the build is ready, @[{ALICE_AAD}]']) == 0
     body = sent[0].model_dump(by_alias=True, exclude_none=True)
-    assert body['text'] == '<at>Alice &amp; Co</at> the build is ready, <at>Alice &amp; Co</at>'
+    assert body['text'] == '<p><at>Alice &amp; Co</at> the build is ready, <at>Alice &amp; Co</at></p>'
     assert [(e['type'], e['text'], e['mentioned']['id']) for e in body['entities']] == [
         ('mention', '<at>Alice &amp; Co</at>', '29:alice')]
 
@@ -301,6 +301,9 @@ def test_real_sdk_send_uses_cancellable_auth_and_requires_connector_receipt(
             assert form['client_id'] == [CREDS.client_id]
             return httpx.Response(200, json={'access_token': token})
         assert request.method == 'POST'
+        body = json.loads(request.content)
+        assert body['textFormat'] == 'xml'
+        assert body['text'] == '<p>hello</p>'
         assert str(request.url) == 'https://smba.example.com/v3/conversations/chat/activities'
         assert request.headers['Authorization'] == 'Bearer ' + token
         if receipt == 'malformed':
@@ -314,3 +317,42 @@ def test_real_sdk_send_uses_cancellable_auth_and_requires_connector_receipt(
     monkeypatch.setattr(httpx.AsyncClient, 'send', send_http)
     assert cli.main(['send', '--conversation', 'chat', '--text', 'hello']) == expected
     assert len(requests) == 2
+
+
+@pytest.mark.parametrize('with_image', [False, True])
+def test_cli_send_preserves_line_breaks_and_formatting(send_environment, monkeypatch, tmp_path, with_image):
+    from PIL import Image
+    add_alice()
+    sent = capture_sends(monkeypatch)
+    text = (f'@[{ALICE_AAD}] status:\nReady to retest\nWorking as intended\n\n'
+            '- First bullet\n- Second bullet\n\n**7.** Seven\n**8.** Eight\n\n'
+            '[Link](https://example.com) & <check>')
+    args = ['send', '--conversation', 'chat', '--text', text]
+    if with_image:
+        path = tmp_path / 'image.png'
+        Image.new('RGB', (20, 20), 'navy').save(path)
+        args += ['--image', str(path)]
+    assert cli.main(args) == 0
+    body = sent[0].model_dump(by_alias=True, exclude_none=True)
+    assert body['textFormat'] == 'xml'
+    assert body['text'] == (
+        '<p><at>Alice &amp; Co</at> status:<br />Ready to retest<br />Working as intended</p>'
+        '<ul><li>First bullet</li><li>Second bullet</li></ul>'
+        '<p><strong>7.</strong> Seven<br /><strong>8.</strong> Eight</p>'
+        '<p><a href="https://example.com">Link</a> &amp; &lt;check&gt;</p>')
+    assert body['entities'][0]['text'] == '<at>Alice &amp; Co</at>'
+    assert body['entities'][0]['mentioned']['id'] == '29:alice'
+    assert bool(body.get('attachments')) == with_image
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('First\r\nSecond', '<p>First<br />Second</p>'),
+    ('```\nfirst\nsecond\n```', '<pre><code>first&#10;second&#10;</code></pre>'),
+    ('<script>alert(1)</script>', '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>'),
+])
+def test_cli_send_encodes_line_breaks_without_raw_newlines(send_environment, monkeypatch, text, expected):
+    sent = capture_sends(monkeypatch)
+    assert cli.main(['send', '--conversation', 'chat', '--text', text]) == 0
+    body = sent[0].model_dump(by_alias=True, exclude_none=True)
+    assert body['textFormat'] == 'xml'
+    assert body['text'] == expected
