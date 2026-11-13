@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in Toucan Router, the Teams bot or the tools doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Don't paste hook URLs, bot secrets, tokens, phone numbers or real chat messages.
+        Replace people and IDs with fictional ones (alice, bob, example.com).
+        Report security problems through "Report a vulnerability" instead.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Router (toucan)
+        - Teams bot (toucan-teams-bot)
+        - Tools (toucan-router-tools)
+        - Docs or setup
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version from `uv tool list`, or the commit you installed from.
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Chat source
+      multiple: true
+      options:
+        - WhatsApp
+        - Teams
+        - Email
+        - Not source-specific
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The command you ran and what it printed. `--json` output helps.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: toucan doctor output
+      description: Output of `toucan doctor --json`. It hides IDs unless you pass `--show-ids`, so don't.
+      render: json
