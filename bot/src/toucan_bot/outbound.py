@@ -45,6 +45,28 @@ class Mention:
         return f"<at>{html.escape(self.name, quote=False)}</at>"
 
 
+def render(text: str, mentions: list[Mention] = ()) -> str:
+    """Render Markdown locally so Teams cannot turn soft breaks into backslashes."""
+    from markdown_it import MarkdownIt
+    from uuid import uuid4
+
+    # Mention markup must survive escaping and Markdown in display names unchanged.
+    replacements = {}
+    for mention in mentions:
+        marker = uuid4().hex
+        while marker in text:
+            marker = uuid4().hex
+        text = text.replace(mention.text, marker)
+        replacements[marker] = mention.text
+    rendered = MarkdownIt('commonmark', {'breaks': True, 'html': False, 'linkify': True}).enable('linkify').render(text)
+    for marker, mention in replacements.items():
+        rendered = rendered.replace(marker, mention)
+    # Use explicit HTML breaks throughout the activity. Keep code-block
+    # whitespace as entities and omit HTML layout whitespace.
+    rendered = re.sub(r"<pre>.*?</pre>", lambda m: m[0].replace("\n", "&#10;"), rendered, flags=re.S)
+    return rendered.replace("\n", "")
+
+
 def tags(text: str, members) -> tuple[str, list[Mention]]:
     """Replace each `@[ENTRA_ID]` with a mention of that chat member.
 
