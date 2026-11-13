@@ -66,6 +66,7 @@ The guides are in [docs/](docs/) and inside the package (`toucan guide --list`):
 | [setup-alerts](docs/setup-alerts.md) | ntfy or any alert URL |
 | [configuration](docs/configuration.md) | every config key |
 | [operations](docs/operations.md) | the request lifecycle, rotation, escalations, recovery |
+| [telemetry](docs/telemetry.md) | the one anonymous usage event a day, and how to turn it off |
 
 `toucan guide` prints [AGENTS.md](AGENTS.md), the instructions agents follow.
 
@@ -97,6 +98,10 @@ WhatsApp support uses wacli, an unofficial client. Use a dedicated number: Whats
 numbers that use unofficial clients. The Loom uploader in `toucan-router-tools` also uses Loom's
 unofficial API and is marked experimental. Read [SECURITY.md](SECURITY.md) before routing chats from people you
 don't fully trust: their messages reach agents that can run commands.
+
+Toucan sends one anonymous usage event a day (version and counts, never chat content). Turn it
+off with `TOUCAN_TELEMETRY=0` or `toucan config set settings.telemetry false`; see
+[docs/telemetry.md](docs/telemetry.md).
 
 ## Development
 

@@ -22,6 +22,7 @@ Secrets never go in this file. Webhook URLs live in hook files and the alert URL
 | `owner_whatsapp` | none | Your personal WhatsApp JID (`15550000000@s.whatsapp.net`). Drafts and escalations go here. Required before any draft or escalation can be sent. |
 | `drafts_whatsapp` | `owner_whatsapp` | Where drafts for you to post go instead: a phone JID, or a group JID (`120363000000000000@g.us`) such as an alerts group with only you in it. Escalation cards and the daily list always go to `owner_whatsapp`. |
 | `timezone` | `"UTC"` | IANA zone used for every time Toucan shows (`Europe/London`, `America/New_York`). |
+| `telemetry` | `true` | `false` stops the one anonymous usage event a day. See [telemetry](telemetry.md). |
 | `alert_url` | none | URL that receives alerts. See [setup-alerts.md](setup-alerts.md). |
 | `alert_url_file` | none | Mode-600 file containing the alert URL, for secret ntfy topics. When set, it wins over `alert_url` and must contain a valid HTTP URL. |
 | `upload_command` | `"toucan-upload-loom"` | Command used by `toucan upload`. The default comes from the optional `toucan-router-tools` package. See [setup-upload.md](setup-upload.md). |
@@ -275,6 +276,7 @@ requests would come back.
 |---|---|
 | `TOUCAN_CONFIG` | Config file path. |
 | `TOUCAN_DB` | State database path. |
+| `TOUCAN_TELEMETRY` | `0` turns off the daily usage event, as does `DO_NOT_TRACK=1`. See [telemetry](telemetry.md). |
 | `TOUCAN_LOOM_CLIENT_ID` | OAuth client ID for `toucan-upload-loom` (toucan-router-tools). |
 | `TOUCAN_SHEETS_DIR` | Folder holding `toucan-sheets`' OAuth client and token (toucan-router-tools; default `~/.config/toucan/sheets`). |
 | `TOUCAN_BOT_STATE_DIR` | Bot state directory, default `~/.local/state/toucan-bot`. |

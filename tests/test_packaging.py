@@ -60,7 +60,7 @@ def test_installed_wheel_guides_and_setup_prompt_work_without_checkout(router_wh
 
     topics = json.loads(cli('guide', '--list', '--json'))
     assert topics == ['setup-t3', 'setup-whatsapp', 'setup-teams', 'setup-email', 'setup-upload',
-                      'setup-sheets', 'setup-alerts', 'configuration', 'operations', 'owner-thread']
+                      'setup-sheets', 'setup-alerts', 'configuration', 'operations', 'telemetry', 'owner-thread']
     assert cli('guide').rstrip() == (root / 'AGENTS.md').read_text().rstrip()
     for topic in topics:
         source = root / 'skills/toucan-owner-thread/SKILL.md' if topic == 'owner-thread' else root / f'docs/{topic}.md'

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "toucan-teams-bot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Teams bot for Toucan Router: receive approved requests and post replies."
 readme = {text = "Teams bot for Toucan Router. See the project homepage for setup instructions.", content-type = "text/plain"}
 license = "MIT"

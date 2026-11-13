@@ -9,7 +9,7 @@ from . import config, configedit, sources, t3
 from .storage import private_dir, state_path
 
 TOPICS = ('setup-t3', 'setup-whatsapp', 'setup-teams', 'setup-email', 'setup-upload',
-          'setup-sheets', 'setup-alerts', 'configuration', 'operations', 'owner-thread')
+          'setup-sheets', 'setup-alerts', 'configuration', 'operations', 'telemetry', 'owner-thread')
 
 
 def hooks_dir():

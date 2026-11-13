@@ -22,7 +22,7 @@ PHONE = re.compile(r'^\d+@s\.whatsapp\.net$')
 JID = re.compile(r'^\d+@(s\.whatsapp\.net|lid|g\.us)$')
 GROUP = re.compile(r'^\d+(-\d+)?@g\.us$')
 # Keys toucan reads (active_ts is added by load). Anything else is likely a typo that would do nothing.
-KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email', 'github'},
+KEYS = dict(settings=set(DEFAULTS) | {'ntfy', 'telemetry'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email', 'github'},
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens', 'waiter'},
             projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes', 'rules', 'ledger'},
             routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
@@ -114,6 +114,8 @@ def validate(cfg):
         raise ValidationError(f'settings.router_budget_seconds must be at most {ROUTER_BUDGET_MAX}')
     if settings['router_timeout_seconds'] > settings['router_budget_seconds']:
         raise ValidationError('settings.router_timeout_seconds must not exceed router_budget_seconds')
+    if not isinstance(settings.get('telemetry', True), bool):
+        raise ValidationError('settings.telemetry must be true or false')
     settings['owner_teams_id'] = settings['owner_teams_id'].lower()
     if 'ntfy' in settings and not settings['alert_url']:
         settings['alert_url'] = settings['ntfy']

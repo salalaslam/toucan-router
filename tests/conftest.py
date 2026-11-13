@@ -231,6 +231,12 @@ def default_config_home(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_telemetry(monkeypatch):
+    # The suite never sends usage events; tests/test_telemetry.py turns them back on with a fake sender.
+    monkeypatch.setenv('TOUCAN_TELEMETRY', '0')
+
+
+@pytest.fixture(autouse=True)
 def hide_installed_upload_tool(monkeypatch, tmp_path):
     # doctor runs the optional Loom uploader when it is on PATH. A developer who has
     # toucan-router-tools installed must see the same results as CI, which doesn't, so
