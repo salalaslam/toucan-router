@@ -16,6 +16,32 @@ Each `toucan sync` reads every source, records new and edited messages, wakes th
 sends alerts and checks promises. Use `toucan sync --dry-run` to see what it would do without
 writing anything, and `--shadow` to record state without waking or sending.
 
+## Pausing routing
+
+```sh
+toucan pause --reason 'maintenance'          # until `toucan unpause`
+toucan pause --until 2h                      # or an ISO time; the first sync after it carries on
+toucan unpause
+```
+
+While paused, `toucan sync` reads no source, creates no requests, sends no wake-ups,
+acknowledgements or alerts, and exits 0 with a `paused` object. `toucan digest` sends nothing;
+open cards wait for the first list after the pause. Owner threads can still `reply`, `send`
+and `escalate` on requests they already hold, and `toucan wait` keeps running. `toucan status`
+shows the pause, and `toucan log` has `routing_paused` and `routing_unpaused` events. Pausing
+again replaces the end time and reason and keeps the original start.
+
+The pause lives in Toucan's database, so it holds however sync is run: the systemd timer,
+another scheduler or by hand. The first sync after `toucan unpause` (or after `--until`) catches
+up the way it does after downtime: messages that arrived during the pause become requests.
+WhatsApp and email are read back only `--lookback-hours` (48 by default), so after a longer pause
+`toucan unpause` warns that older messages from those sources will not become requests. Teams
+catch-up uses the bot's change sequence and has no such limit.
+
+This is not the same as `settings.pause_file`, which leaves routing on and tells owner threads
+to keep replies short and start no long work, or `toucan disable`, which stops the systemd
+units that `toucan enable` wrote.
+
 ## The request lifecycle
 
 ```sh

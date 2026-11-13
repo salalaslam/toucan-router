@@ -18,6 +18,7 @@ from .storage import account_warning, event, insert, private_dir
 OPEN = "('new','claimed','done')"
 ACTIVE = "('new','held','claimed','done')"  # OPEN plus requests the live router holds: their messages are still tracked
 WAITER_FRESH = 30  # seconds; `toucan wait` beats every 5
+PAUSE_KEY = 'routing_paused'  # meta key `toucan pause` writes
 VOICE_TRIES = 3      # syncs that try one voice note before its request goes ahead without a transcript
 VOICE_PER_SYNC = 5
 VOICE_BUDGET = 60    # seconds; no new note starts after this, so a sync stays well inside its 5-minute timeout
@@ -235,12 +236,80 @@ class App:
         return self.db.execute('SELECT * FROM messages WHERE source=? AND account=? AND chat=? AND msg_id=?',
                                tuple(message[k] for k in ('source', 'account', 'chat', 'msg_id'))).fetchone()
 
+    def routing_pause(self, now=None):
+        """The pause `toucan pause` set, as {since, until, reason}, or None. Given `now`, a pause whose
+        `until` has passed counts as over. An unreadable value still counts as paused: only Toucan
+        writes it, and failing quiet is safer than routing people's messages the operator stopped."""
+        row = self.db.execute('SELECT value FROM meta WHERE key=?', (PAUSE_KEY,)).fetchone()
+        if not row:
+            return None
+        try:
+            data = json.loads(row['value'])
+        except ValueError:
+            data = None
+        data = data if isinstance(data, dict) else {}
+        num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+        reason = data.get('reason')
+        pause = dict(since=num(data.get('since')), until=num(data.get('until')),
+                     reason=reason if isinstance(reason, str) and reason else None)
+        if now is not None and pause['until'] is not None and pause['until'] <= now:
+            return None
+        return pause
+
+    def pause_routing(self, until=None, reason=None):
+        """Stop sync and the daily list until `toucan unpause` or `until`. Pausing again replaces the
+        end time and reason and keeps the original start."""
+        now = self.fx.now()
+        if until is not None and until <= now:
+            raise ValidationError('--until must be in the future')
+        reason = (reason or '').strip() or None
+        with self.transaction():
+            current = self.routing_pause(now)
+            pause = dict(since=current['since'] if current and current['since'] is not None else now,
+                         until=until, reason=reason)
+            self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (PAUSE_KEY, json.dumps(pause)))
+            self.record('routing_paused', until=until, reason=reason, already=bool(current))
+        return dict(paused=pause, already_paused=bool(current))
+
+    def unpause_routing(self, lookback=48):
+        with self.transaction():
+            return self._clear_pause(lookback, automatic=False)
+
+    def _clear_pause(self, lookback, automatic):
+        """Clear the pause inside the caller's transaction. The next sync catches up like after downtime;
+        WhatsApp and email are read back only `lookback` hours, so say so when the gap is longer."""
+        now = self.fx.now()
+        pause = self.routing_pause()
+        if pause is None:
+            return dict(unpaused=False, paused=None)
+        last = self.db.execute("SELECT value FROM meta WHERE key='last_sync'").fetchone()
+        starts = [t for t in (pause['since'], float(last['value']) if last else None) if t is not None]
+        gap = now - min(starts) if starts else None
+        self.db.execute('DELETE FROM meta WHERE key=?', (PAUSE_KEY,))
+        self.record('routing_unpaused', since=pause['since'], automatic=automatic)
+        result = dict(unpaused=True, paused=pause, gap_seconds=gap)
+        if gap is not None and gap > lookback * 3600:
+            result['warning'] = (f'Toucan has not synced for more than {lookback:g} hours. WhatsApp and email messages '
+                                 'older than that will not become requests; check those chats by hand.')
+        return result
+
     def sync(self, lookback=48):
+        now = self.fx.now()
+        # First: a paused Toucan reads nothing, so a broken source cannot fail the run either.
+        resumed = None
+        if self.routing_pause():
+            with self.transaction():
+                pause = self.routing_pause()  # again inside the transaction: a pause may have just been replaced
+                if pause and self.routing_pause(now) is None:
+                    resumed, pause = self._clear_pause(lookback, automatic=True), None
+            if pause:
+                return dict(dry_run=self.dry, paused=pause, ingested=0, created=[], wakes=[], problems={}, routes=[])
         warning = account_warning(self.db, self.paths.wa_account)
         if warning:
             raise ValidationError(warning)
-        now = self.fx.now()
         report = dict(dry_run=self.dry, ingested=0, created=[], wakes=[], problems={}, routes=[])
+        if resumed:
+            report['resumed'] = resumed
         problems = report['problems']
         report['voice_notes'] = self.transcribe(now, lookback)
         with self.transaction():
@@ -1612,8 +1681,12 @@ class App:
 
     def digest(self):
         """The once-a-day list for the owner: every card still waiting on them, and how many requests
-        threads settled without them yesterday. Sends nothing when nothing is waiting."""
+        threads settled without them yesterday. Sends nothing when nothing is waiting or while paused."""
         now = self.fx.now()
+        pause = self.routing_pause(now)
+        if pause:
+            # The cards stay open, so the first list after the pause still shows them.
+            return dict(waiting=[], handled_yesterday=None, sent=False, text=None, paused=pause)
         zone = ZoneInfo(self.settings['timezone'])
         today = datetime.fromtimestamp(now, zone).replace(hour=0, minute=0, second=0, microsecond=0)
         start, end = (today - timedelta(days=1)).timestamp(), today.timestamp()
