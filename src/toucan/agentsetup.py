@@ -85,9 +85,11 @@ def hook(action, key, cfg, paths=None):
 
 
 def setup_prompt(cfg, key, standby=False):
-    thread(cfg, key)
+    entry = thread(cfg, key)
     text = resource('docs/setup-t3.md')
     prompt = text.split('```text\n', 1)[1].split('\n```', 1)[0].replace('project-a', key)
+    if not entry.get('waiter', True):
+        prompt = '\n'.join(line for line in prompt.split('\n') if not line.startswith('0. '))
     prompt = prompt.replace('If the owner answers', f'If {cfg["settings"]["owner_name"]} answers')
     if standby:
         prompt += ('\nYou are the fallback thread on another provider. Read `toucan log --request REQ` '

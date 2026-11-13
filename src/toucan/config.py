@@ -23,7 +23,7 @@ JID = re.compile(r'^\d+@(s\.whatsapp\.net|lid|g\.us)$')
 GROUP = re.compile(r'^\d+(-\d+)?@g\.us$')
 # Keys toucan reads (active_ts is added by load). Anything else is likely a typo that would do nothing.
 KEYS = dict(settings=set(DEFAULTS) | {'ntfy'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email', 'github'},
-            threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens'},
+            threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens', 'waiter'},
             projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes', 'rules', 'ledger'},
             routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
                     'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'send_threads', 'active_ts'},
@@ -177,6 +177,8 @@ def validate(cfg):
             raise ValidationError(f'thread {key}: t3_thread must be non-empty text')
         if 'rotate_tokens' in thread and (type(thread['rotate_tokens']) is not int or thread['rotate_tokens'] <= 0):
             raise ValidationError(f'thread {key}: rotate_tokens must be a positive integer')
+        if not isinstance(thread.get('waiter', True), bool):
+            raise ValidationError(f'thread {key}: waiter must be true or false')
         if 'fallback' in thread and (thread['fallback'] not in threads or thread['fallback'] == key):
             raise ValidationError(f'thread {key}: fallback must be another configured thread')
     terms = {}

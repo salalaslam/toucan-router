@@ -190,6 +190,16 @@ def test_setup_prompt_and_standby_use_owner_template(agent):
     assert invoke('setup-prompt', 'missing', code=2)
 
 
+def test_no_waiter_thread_is_saved_and_its_setup_prompt_skips_the_waiter_step(agent):
+    path, invoke = agent
+    invoke('add', 'thread', 'project-b')
+    assert 'toucan wait --thread project-b' in invoke('setup-prompt', 'project-b')['prompt']
+    assert invoke('add', 'thread', 'project-a', '--no-waiter')['status'] == 'updated'
+    assert tomllib.loads(path.read_text())['threads']['project-a']['waiter'] is False
+    prompt = invoke('setup-prompt', 'project-a')['prompt']
+    assert 'toucan wait' not in prompt and '1. Claim what you will handle' in prompt
+
+
 def test_guide_checkout_topics_and_unknown(agent):
     _, invoke = agent
     topics = invoke('guide', '--list')
