@@ -8,7 +8,7 @@ import subprocess
 from importlib.resources import files
 from pathlib import Path
 
-from . import router, sources, t3
+from . import router, sources, t3, telemetry
 from .config import PHONE, ValidationError, hook_warning, load, warnings
 from .effects import Effects, local_run
 from .storage import account_warning, private_dir, readonly, state_path
@@ -160,6 +160,8 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
     check('owner_name', 'configuration', bool(settings['owner_name'].strip()) and settings['owner_name'] != 'the owner', 'Set settings.owner_name' if settings['owner_name'] == 'the owner' else 'Owner name set', 'configuration')
     check('owner_whatsapp', 'configuration', bool(PHONE.fullmatch(settings['owner_whatsapp'])), 'Owner WhatsApp set' if PHONE.fullmatch(settings['owner_whatsapp']) else 'Set settings.owner_whatsapp', 'setup-whatsapp')
     add('timezone', 'configuration', 'ok', f'Timezone {settings["timezone"]}', 'configuration')
+    add('telemetry', 'configuration', 'ok', 'Anonymous usage events on; TOUCAN_TELEMETRY=0 turns them off'
+        if telemetry.enabled(settings) else 'Anonymous usage events off', 'telemetry')
     for key, thread in cfg['threads'].items():
         warning = hook_warning(thread)
         check(f'thread:{key}:hook', 't3', not warning, f'{key}: {warning or "hook file has mode 600"}', 'setup-t3')

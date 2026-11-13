@@ -38,8 +38,8 @@ def call(argv, text, timeout):
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
-def post(url, data, headers):
-    with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=20) as response:
+def post(url, data, headers, timeout=20):
+    with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=timeout) as response:
         return response.status
 
 

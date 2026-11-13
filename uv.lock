@@ -733,7 +733,7 @@ wheels = [
 
 [[package]]
 name = "toucan-router"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 
 [[package]]
@@ -752,7 +752,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "toucan-teams-bot"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "bot" }
 dependencies = [
     { name = "microsoft-teams-apps" },

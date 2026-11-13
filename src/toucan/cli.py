@@ -7,7 +7,7 @@ import sys
 
 from .config import Refused, ValidationError, load, timestamp, warnings
 from .core import App
-from . import agentsetup, configedit, discovery, ledger, router, services, setup
+from . import agentsetup, configedit, discovery, ledger, router, services, setup, telemetry
 from .effects import Effects
 from .storage import connect
 
@@ -497,6 +497,9 @@ def main(argv=None, *, effects=None, paths=None):
             db = connect(dry=dry)
             result = dispatch(args, App(cfg, db, effects, paths, dry, getattr(args, 'shadow', False)))
         print(result if isinstance(result, str) and not args.json else json.dumps(result, indent=None if args.json else 2, ensure_ascii=False))
+        if db is not None and not getattr(args, 'dry_run', False):
+            sys.stdout.flush()
+            telemetry.report(cfg, db, effects or Effects())
         if (args.command == 'rotate' and args.check and not result['done'] or
                 args.command == 'wait' and isinstance(result, dict) and result.get('replaced')):
             return 3
