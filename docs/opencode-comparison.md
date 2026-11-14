@@ -2,7 +2,7 @@
 
 Both tools put an AI coding agent to work. They do different jobs.
 
-[opencode](https://github.com/sst/opencode) is the agent. It talks to the AI model, edits
+[opencode](https://github.com/anomalyco/opencode) is the agent. It talks to the AI model, edits
 files, runs commands, and asks you before risky steps. You use it from its terminal, desktop
 or web app.
 
