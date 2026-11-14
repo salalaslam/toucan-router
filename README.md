@@ -29,7 +29,7 @@ What it does:
 - Rotates T3 threads whose context gets large, and hands requests to a fallback thread on
   another provider while one is rate-limited.
 
-How it compares with Hermes Agent: [docs/hermes-comparison.md](docs/hermes-comparison.md).
+How it compares with [Hermes Agent](docs/hermes-comparison.md) and [opencode](docs/opencode-comparison.md).
 
 ## Requirements
 
