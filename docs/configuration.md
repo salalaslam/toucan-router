@@ -217,6 +217,7 @@ self_github = ["example-owner"]
 | Key | Default | Meaning |
 |---|---|---|
 | `mode` | `"shadow"` | `off`, `shadow` (record what Preflight would hold, send anyway) or `enforce` (refuse held sends unless the thread passes `--override`). |
+| `enforce_rules` | all four rules | In `enforce` mode, the rules that refuse a send. The others are recorded as in `shadow` mode, so a rule can keep collecting verdicts while the accurate ones block. |
 | `people` | `[]` | Person keys the ledger follows. Sends to anyone else are not checked. |
 | `pel` | the project's `escalate_to`, if it is in `people` | The person who reviews material before everyone else. Set it to `""` to turn off the PEL-first check. |
 | `review_hosts` | `[]` | Hosts whose links count as review material, such as a whiteboard or a question form. Subdomains match. |

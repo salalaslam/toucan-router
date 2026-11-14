@@ -511,7 +511,8 @@ when:
 | `burst` | The person has had `burst_per_hour` sends in the last hour without writing back. |
 
 In `shadow` mode the send goes out and the verdict is recorded as a `preflight` event. In
-`enforce` mode a held send is refused (exit 3) with the reasons, and recorded as a `preflight`
+`enforce` mode a send held by a rule in `enforce_rules` (all four by default) is refused (exit 3) with
+those reasons; holds from the other rules are only recorded. A refused send is recorded as a `preflight`
 event with `refused: true`. The thread fixes the message or sends it with
 `--override "why it must go now"`, which is recorded too. Who each send was for is recorded when it
 is queued, since WhatsApp replaces `@[person]` tags with names. Drafts,
