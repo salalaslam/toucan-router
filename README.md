@@ -1,12 +1,19 @@
-# Toucan Router
+<h1 align="center">Toucan Router</h1>
 
-Toucan Router connects WhatsApp, Microsoft Teams and email to coding agents running in
-[T3 Code](https://github.com/pingdotgg/t3code). When an approved person messages a chat
-you've routed, Toucan wakes the T3 thread that owns that chat. It then tracks the request
-until the thread replies, promises a follow-up, escalates to you or closes it.
+<p align="center">Let colleagues message your coding agents on WhatsApp, Teams and email.</p>
 
-It is a small, single-operator tool for people who already run Claude Code or Codex
-threads in T3 Code and want colleagues to be able to ask those threads for work.
+<p align="center">
+  <a href="#quick-start"><strong>Quick start</strong></a> ·
+  <a href="docs/">Docs</a> ·
+  <a href="docs/faq.md">FAQ</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
+  <a href="https://pypi.org/project/toucan-router/">PyPI</a>
+</p>
+
+Toucan Router connects WhatsApp, Microsoft Teams and email to the Claude Code and Codex threads
+you already run in [T3 Code](https://github.com/pingdotgg/t3code). A colleague asks in a chat,
+the thread that owns that chat wakes up and does the work, and Toucan tracks the request until
+the thread replies, promises a follow-up, escalates to you or closes it.
 
 ```
 WhatsApp (wacli) ─┐                       ┌─> T3 thread "project-a" ─┐
@@ -16,59 +23,40 @@ Email (notmuch) ──┘    (allowlist)        └─> T3 thread "project-b" �
                                     WhatsApp, Teams (as the bot), or a draft to you
 ```
 
-What it does:
+## What you get
 
-- Reads approved chats only. People are matched by WhatsApp JID, Entra ID or email address,
-  never by display name.
-- Wakes a thread through its T3 webhook. The wake carries counts and times, never message text.
-- Tracks every request: `claim`, `reply --final`, `reply --promise WHAT --due 3h`, `done`,
-  `close`, `escalate`, `resume`. Overdue promises and unclaimed requests send an alert.
-- Sends replies to WhatsApp, posts them in Teams as a bot, or drafts them to you.
+- **Your agents, your subscriptions.** Toucan runs no agent of its own. It wakes the T3 thread
+  you already run, and the agent there answers with its own tools.
+- **Only the people you approve.** Toucan reads the chats you route and matches people by
+  WhatsApp JID, Entra ID or email address, never by display name. Everyone else stays context.
+- **Every request tracked.** `claim`, `reply --final`, `reply --promise WHAT --due 3h`, `done`,
+  `close`, `escalate`. An overdue promise or an unclaimed request sends you an alert.
+- **Decisions only you can make, as one short card.** Threads can escalate a production deploy,
+  a client commitment, scope, money or access. You answer "T435 B" from your phone.
+- **Replies where the question came from.** WhatsApp, Teams as a bot, or a draft to you.
   Email is read-only: Toucan never sends email.
-- Uploads proof videos with `toucan upload`, through any uploader command you configure.
-- Rotates T3 threads whose context gets large, and hands requests to a fallback thread on
-  another provider while one is rate-limited.
-
-Toucan is not an agent harness. The [FAQ](docs/faq.md) explains why, and how it compares with OpenClaw, NanoClaw and others. Longer comparisons with [Hermes Agent](docs/hermes-comparison.md) and [opencode](docs/opencode-comparison.md).
-
-## Requirements
-
-- Linux with systemd user services, Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/)
-  or pipx.
-- [T3 Code](https://github.com/pingdotgg/t3code) running on the same machine.
-- At least one source: [wacli](docs/setup-whatsapp.md) for WhatsApp,
-  the [Toucan Teams bot](docs/setup-teams.md) for Teams, or [notmuch](docs/setup-email.md) for email.
+- **Safe sends.** Each reply is written to an outbox before it goes out. An interrupted send is
+  marked uncertain and never resent on its own.
+- **Threads that keep going.** Toucan hands a thread over to a fresh one when its context gets
+  large, and to a fallback thread on the other provider while one is rate-limited.
+- **Small and open.** The router is standard-library Python with no dependencies. MIT licensed.
 
 ## Quick start
 
-Toucan is set up by an agent, not by hand. Paste this into Claude Code or Codex on the machine
-that runs T3 Code:
+You need Linux with systemd user services, Python 3.11 or newer, [uv](https://docs.astral.sh/uv/)
+or pipx, and [T3 Code](https://github.com/pingdotgg/t3code) running on the same machine with
+Claude Code or Codex signed in.
+
+An agent sets Toucan up, not you. Paste this into Claude Code or Codex on that machine:
 
 ```text
 Install toucan-router with `uv tool install toucan-router`, then run `toucan guide` and follow
 it to set Toucan up for me. Ask me before adding anyone or turning anything on.
 ```
 
-The agent installs the package, asks for your name, timezone and number, discovers your chats,
-adds the people and routes you pick, wires each owner thread to T3, and turns on the timer.
-`toucan doctor` shows what's configured and what's left at any point.
-
-The guides are in [docs/](docs/) and inside the package (`toucan guide --list`):
-
-| Topic | Covers |
-|---|---|
-| [setup-t3](docs/setup-t3.md) | owner threads, webhook tasks, hook files |
-| [setup-whatsapp](docs/setup-whatsapp.md) | wacli pairing and sync |
-| [setup-teams](docs/setup-teams.md) | the Teams bot: registration, approval, routing |
-| [setup-email](docs/setup-email.md) | read-only email through notmuch |
-| [setup-upload](docs/setup-upload.md) | the upload hook, and Loom through toucan-router-tools |
-| [setup-sheets](docs/setup-sheets.md) | Google Sheets through toucan-router-tools |
-| [setup-alerts](docs/setup-alerts.md) | ntfy or any alert URL |
-| [configuration](docs/configuration.md) | every config key |
-| [operations](docs/operations.md) | the request lifecycle, rotation, escalations, recovery |
-| [telemetry](docs/telemetry.md) | the one anonymous usage event a day, and how to turn it off |
-
-`toucan guide` prints [AGENTS.md](AGENTS.md), the instructions agents follow.
+The agent asks for your name, timezone and number, discovers your chats, adds the people and
+routes you pick, wires each owner thread to T3, and turns on the timer. `toucan doctor` shows
+what's configured and what's left at any point.
 
 ## How much you need to set up
 
@@ -80,6 +68,35 @@ Most people stop after the first or second tier.
 | 2 | + email (read-only) | none new | your mail sync |
 | 3 | + Teams | one Azure Bot, approved once by a Teams admin, and a public HTTPS URL | `toucan-bot` |
 
+## What Toucan is not
+
+Toucan is not an agent harness, a hosted service or a chatbot. It has no system prompt, no model
+tools and no agent loop. It is a command-line tool and a timer on your own machine. The
+[FAQ](docs/faq.md) explains the difference and compares Toucan with OpenClaw, NanoClaw and
+others. There are longer comparisons with [Hermes Agent](docs/hermes-comparison.md) and
+[opencode](docs/opencode-comparison.md).
+
+## Documentation
+
+Setup (also inside the package, `toucan guide --list`):
+
+- [T3 owner threads, webhook tasks and hook files](docs/setup-t3.md)
+- [WhatsApp through wacli](docs/setup-whatsapp.md)
+- [Teams through the Toucan bot](docs/setup-teams.md)
+- [Read-only email through notmuch](docs/setup-email.md)
+- [Proof-video uploads, and Loom](docs/setup-upload.md)
+- [Google Sheets](docs/setup-sheets.md)
+- [Alerts through ntfy or any URL](docs/setup-alerts.md)
+
+Running it:
+
+- [Configuration: every key](docs/configuration.md)
+- [Operations: the request lifecycle, rotation, escalations, recovery](docs/operations.md)
+- [Telemetry: the one anonymous event a day, and how to turn it off](docs/telemetry.md)
+- [Architecture: how the pieces fit](docs/architecture.md)
+
+`toucan guide` prints [AGENTS.md](AGENTS.md), the instructions agents follow.
+
 ## Packages
 
 | Package | Commands | What it's for |
@@ -90,20 +107,27 @@ Most people stop after the first or second tier.
 
 ## Status
 
-Version 0.1. T3 Code is the only supported agent host. Toucan reads some of T3's internal
+Version 0.3. T3 Code is the only supported agent host. Toucan reads some of T3's internal
 tables for optional features (rotation, rate-limit fallback, `resume`). When a T3 update
 changes them, those features turn off, `toucan doctor` warns, and wakes keep working.
 
 WhatsApp support uses wacli, an unofficial client. Use a dedicated number: WhatsApp can ban
 numbers that use unofficial clients. The Loom uploader in `toucan-router-tools` also uses Loom's
-unofficial API and is marked experimental. Read [SECURITY.md](SECURITY.md) before routing chats from people you
-don't fully trust: their messages reach agents that can run commands.
+unofficial API and is marked experimental. Read [SECURITY.md](SECURITY.md) before routing chats
+from people you don't fully trust: their messages reach agents that can run commands.
 
 Toucan sends one anonymous usage event a day (version and counts, never chat content). Turn it
 off with `TOUCAN_TELEMETRY=0` or `toucan config set settings.telemetry false`; see
 [docs/telemetry.md](docs/telemetry.md).
 
-## Development
+## Contributing
+
+Bug reports, fixes and small improvements are welcome. Open an issue before a larger change.
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, rules and test data.
+- [docs/architecture.md](docs/architecture.md) explains how the router, the sources and T3 fit
+  together, and which rules keep them safe.
+- Security problems go through GitHub's "Report a vulnerability" button. See [SECURITY.md](SECURITY.md).
 
 ```sh
 uv venv && uv pip install -e . pytest && .venv/bin/python -m pytest -q
@@ -111,4 +135,6 @@ uv venv && uv pip install -e . pytest && .venv/bin/python -m pytest -q
 (cd tools && uv venv && uv pip install -e . pytest && .venv/bin/python -m pytest -q)
 ```
 
-MIT licensed. See [LICENSE](LICENSE).
+## License
+
+[MIT](LICENSE)
