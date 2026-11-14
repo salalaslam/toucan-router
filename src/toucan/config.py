@@ -15,7 +15,7 @@ DEFAULTS = dict(rewake_minutes=15, wake_gap_minutes=2, max_wakes=3, claimed_stal
                 rotate_stall_minutes=60, owner_t3_threads=(), owner_whatsapp='', drafts_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
                 alert_url_file='', upload_command='toucan-upload-loom', transcribe='', followup_minutes=120,
                 router_general_thread='', router_commands=(), router_timeout_seconds=60, router_history=20,
-                router_budget_seconds=90, router_hold_minutes=5, router_ask_minutes=15, max_bounces=2, thread_rules='', pause_file='', ack_emoji='eyes', done_gate='off')
+                router_budget_seconds=90, router_hold_minutes=5, router_ask_minutes=15, max_bounces=2, thread_rules='', pause_file='', ack_emoji='eyes', done_gate='off', outage_notice_minutes=0)
 ROUTER_MODES = ('off', 'shadow', 'live')
 ROUTER_BUDGET_MAX = 180  # seconds; keeps a sync well inside the timer unit's 5-minute timeout
 PHONE = re.compile(r'^\d+@s\.whatsapp\.net$')
@@ -93,7 +93,11 @@ def validate(cfg):
         raise ValidationError('settings, people, threads and projects must be TOML tables')
     settings = cfg['settings'] = DEFAULTS | cfg.get('settings', {})
     for key in DEFAULTS:
-        if key not in TEXT_SETTINGS | LIST_SETTINGS:
+        if key == 'outage_notice_minutes':
+            value = settings[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value < float('inf'):
+                raise ValidationError(f'settings.{key} must be 0 (off) or a positive number of minutes')
+        elif key not in TEXT_SETTINGS | LIST_SETTINGS:
             value = settings[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < float('inf'):
                 raise ValidationError(f'settings.{key} must be positive')

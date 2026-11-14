@@ -5,10 +5,10 @@ import sqlite3
 import pytest
 
 from toucan import t3
-from toucan.config import load, timestamp
+from toucan.config import ValidationError, load, timestamp
 from toucan.core import App
 from toucan.storage import connect
-from conftest import LID, PHONE
+from conftest import LID, OTHER, OWNER, PHONE
 
 
 def test_first_sync_and_active_from_exclude_history(world):
@@ -966,3 +966,83 @@ def test_old_unlinked_limit_message_stays_stale_after_a_newer_run_finishes(world
     # An unlinked limit message written during that run still counts.
     world.t3('error-again', world.now, LIMIT, role='assistant')
     assert 'limited:project-a' in world.app.sync()['problems']
+
+
+def outage_world(world, minutes=15, fallback=True, escalate=False):
+    text = world.config_text.replace('[settings]\n', f'[settings]\noutage_notice_minutes = {minutes}\n', 1)
+    if fallback:
+        backup_hook = world.root / 'backup.hook'
+        backup_hook.write_text('https://hook.invalid/api/hooks/backup/BACKUP')
+        backup_hook.chmod(0o600)
+        text = text.replace('[threads.project-a]\n', '[threads.project-a]\nfallback = "backup"\n') + \
+            f'\n[threads.backup]\nt3_thread = "backup-thread"\nhook_file = "{backup_hook}"\n'
+    if escalate:
+        text += ('\n[projects.project-a]\nname = "Project A"\nthread = "project-a"\nescalate_to = "other"\n'
+                 'escalate_from = "2026-10-01T00:00:00+05:00"\n')
+    world.config_path.write_text(text)
+    world.app = App(load(world.config_path), world.db, world.fx, world.paths)
+    world.seed()
+
+
+def outage_events(world):
+    return [json.loads(e['detail_json']) for e in world.app.rows("SELECT detail_json FROM events WHERE kind='outage_notice'")]
+
+
+def test_outage_notice_is_off_by_default(world):
+    world.seed()
+    world.t3('error', world.now, LIMIT, role='assistant')
+    req = world.request()
+    world.advance(60 * 60)
+    world.app.sync()
+    assert world.app.get(req)['state'] == 'new' and outage_events(world) == []
+
+
+def test_no_notice_while_the_fallback_can_work(world):
+    outage_world(world)
+    world.t3('error', world.now, LIMIT, role='assistant')
+    req = world.request()
+    world.advance(20 * 60)
+    world.app.sync()
+    assert world.app.get(req)['thread'] == 'backup' and outage_events(world) == []
+
+
+def test_owner_and_fallback_limited_tells_the_person_once_and_hands_it_to_the_owner(world):
+    outage_world(world)
+    world.t3_run(1, 'failed', world.now, CODEX_LIMIT)
+    world.t3_run(1, 'failed', world.now, CODEX_LIMIT, thread='backup-thread')
+    req = world.request()
+    world.advance(10 * 60)
+    world.app.sync()
+    assert world.app.get(req)['state'] == 'new' and world.sends == []
+    world.advance(6 * 60)
+    world.app.sync()
+    row = world.app.get(req)
+    assert (row['state'], row['close_reason']) == ('closed', 'outage: handed to Example Owner')
+    to_person, to_owner = world.sends[-2:]
+    assert to_person[5] == PHONE and to_person[7] == "Toucan can't pick this up right now. Example Owner has your message."
+    assert to_owner[5] == OWNER and "Alice Example's message is yours" in to_owner[7]
+    # A second request in the same outage is handed over, but the person isn't told again.
+    world.wa('second')
+    second = world.app.sync()['created'][0]
+    world.advance(16 * 60)
+    world.app.sync()
+    assert world.app.get(second)['state'] == 'closed'
+    assert [e['told'] for e in outage_events(world)] == [1, 0]
+    assert sum(1 for s in world.sends if s[5] == PHONE) == 1
+
+
+def test_a_project_with_a_pel_hands_it_to_the_pel(world):
+    outage_world(world, fallback=False, escalate=True)
+    world.t3('error', world.now, LIMIT, role='assistant')
+    req = world.request()
+    world.advance(16 * 60)
+    world.app.sync()
+    assert world.app.get(req)['close_reason'] == 'outage: handed to Alice Example'
+    assert world.sends[-2][7] == "Toucan can't pick this up right now. Alice Example has your message."
+    assert world.sends[-1][5] == OTHER
+
+
+def test_outage_minutes_must_not_be_negative(world):
+    world.config_path.write_text(world.config_text.replace('[settings]\n', '[settings]\noutage_notice_minutes = -1\n', 1))
+    with pytest.raises(ValidationError, match='outage_notice_minutes'):
+        load(world.config_path)

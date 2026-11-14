@@ -452,6 +452,7 @@ class App:
             # Held requests whose time is up, or whose route is no longer live, go to a thread before the wakes.
             router.expire(self, now, problems)
             limited = self.rate_limits(problems, now)
+            outage = self.outage_notices(now, limited)
             self.wake(report, problems, now, limited)
             self.rotate_threads(report, problems, now, limited)
             posted = self.rows(f"SELECT id,thread FROM requests WHERE state IN {OPEN} "
@@ -493,6 +494,7 @@ class App:
             self.db.execute("INSERT OR REPLACE INTO meta VALUES ('last_sync',?)", (str(now),))
             self.record('sync', ingested=report['ingested'], created=len(report['created']), dry=self.dry)
         self.flush_notices(report['problems'])
+        report['outage_notices'] = self.send_outage_notices(outage, report['problems'])
         # Before the router stage: people see the reaction within a sync of their message arriving.
         report['acks'] = self.ack_arrivals(self.fx.now(), report['problems'])
         # After the transaction: router commands can take seconds, and wakes have already gone out.
@@ -917,6 +919,75 @@ class App:
                     self.db.execute('UPDATE requests SET thread=?,wakes=0,last_wake_at=NULL WHERE id=?', (backup, req['id']))
                     self.record('handed_over', backup, req['id'], from_thread=key)
         return limited
+
+    def outage_notices(self, now, limited):
+        """Requests nobody can pick up: their thread and its fallback are both rate-limited, and they have
+        waited outage_notice_minutes. Each is closed and handed to a person (the project's PEL when it has
+        one, else the owner). The requester is told once per outage, with no time given. Inside sync's
+        transaction; returns the outbox rows to send after it commits."""
+        minutes = self.settings['outage_notice_minutes']
+        queued = []
+        if not minutes or self.dry or self.shadow:
+            return queued
+        for key, stopped in limited.items():
+            backup = self.cfg['threads'][key].get('fallback')
+            if backup and backup not in limited:
+                continue  # the fallback can still work
+            for row in self.rows("SELECT r.*,m.text AS message_text FROM requests r JOIN messages m ON m.id=r.message_id "
+                                 "WHERE r.thread=? AND r.state='new' AND r.routing IS NULL AND r.mode='act'", (key,)):
+                if now - max(row['created_at'], stopped) < minutes * 60:
+                    continue
+                project = self.escalation_project(row) or {}
+                pel = (project.get('escalate_to') if project.get('escalate_to') in self.cfg['people'] and
+                       now >= timestamp(project.get('escalate_from', '1970-01-01T00:00:00+00:00')) else None)
+                who = self.cfg['people'][pel]['name'] if pel else self.settings['owner_name']
+                name = self.cfg['people'].get(row['reply_person'], {}).get('name', 'someone')
+                said = ' '.join((row['part'] or row['message_text'] or '').split())
+                said = said[:300] + ('...' if len(said) > 300 else '')
+                self.db.execute("UPDATE requests SET state='closed',closed_at=?,close_reason=? WHERE id=?",
+                                (now, f'outage: handed to {who}', row['id']))
+                told = self.db.execute("SELECT 1 FROM events WHERE kind='outage_notice' AND ts>=? AND "
+                                       "json_extract(detail_json,'$.chat')=? AND json_extract(detail_json,'$.told')=1",
+                                       (stopped, row['reply_chat'])).fetchone()
+                route = next((r for r in self.cfg['routes'] if r['name'] == row['route']), {})
+                as_bot = row['reply_source'] == 'teams' and route.get('post_as_bot')
+                person_out = None
+                if not told and (as_bot or row['reply_source'] == 'whatsapp'):
+                    try:
+                        person_out = self._queue_delivery(
+                            row['id'], key, 'send', 'teams-bot' if as_bot else 'whatsapp', row['reply_chat'],
+                            prefixed(route, f"Toucan can't pick this up right now. {who} has your message."), None,
+                            outage_notice=row['id'])
+                    except (Refused, ValidationError) as error:
+                        self.record('outage_notice_failed', key, row['id'], error=str(error))
+                if pel:
+                    phone = next((j for j in self.cfg['people'][pel].get('whatsapp', []) if PHONE.fullmatch(j)), None)
+                    kind, to = ('escalation', phone) if phone else ('draft', self.drafts_chat())
+                else:
+                    kind, to = 'draft', self.drafts_chat()
+                handoff = None
+                if to:
+                    text = (f"{name}'s message is yours: Toucan is rate-limited and couldn't pick it up "
+                            f"({route.get('label') or row['route']}). {name} was told you have it.\n\n{said}")
+                    try:
+                        handoff = self._queue_delivery(row['id'], key, kind, 'whatsapp', to, text, None, outage_notice=row['id'])
+                    except (Refused, ValidationError) as error:
+                        self.record('outage_notice_failed', key, row['id'], error=str(error))
+                self.record('outage_notice', key, row['id'], chat=row['reply_chat'], told=1 if person_out else 0,
+                            handed_to=pel or 'owner', person_outbox=person_out, handoff_outbox=handoff)
+                queued += [(o, key, row['id']) for o in (person_out, handoff) if o]
+        return queued
+
+    def send_outage_notices(self, queued, problems):
+        sent = []
+        for out, thread, req in queued:
+            try:
+                # Without the request, so a sent draft or escalation doesn't reopen what was handed over.
+                self._send_outbox(out, thread, None, keep_open=True)
+                sent.append(out)
+            except (RuntimeError, Refused) as error:
+                problems[f'outage:{out}'] = f'Outbox {out}: outage notice for request {req} failed ({error})'
+        return sent
 
     def wake(self, report, problems, now, limited, only=None):
         rewake = self.settings['rewake_minutes'] * 60
@@ -1607,13 +1678,13 @@ class App:
         # Judged on the text as written (person keys in tags), against the chat it goes to. The router's own
         # "which project?" question is exempt.
         checks, people, done = [], None, None
-        if kind == 'send' and 'asks_request' not in detail:
+        if kind == 'send' and 'asks_request' not in detail and 'outage_notice' not in detail:
             try:
                 done = donegate.gate(self, req, raw)
             except donegate.Held as held:
                 held.thread, held.request = thread, req
                 raise
-        if kind == 'send' and 'asks_request' not in detail and ledger.projects(self.cfg, thread):
+        if kind == 'send' and 'asks_request' not in detail and 'outage_notice' not in detail and ledger.projects(self.cfg, thread):
             try:
                 checks = ledger.preflight(self, thread, recipient, f'{raw or ""}\n{body or ""}', override)
             except ledger.Held as held:
