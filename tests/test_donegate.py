@@ -125,3 +125,4 @@ def test_bad_mode_is_refused(world):
 def test_claims_ignore_plans_and_negations():
     assert claims("Once it's live I'll say. It is not fixed.") == ([], [])
     assert claims('Ready on dev. The report is done.') == (['Ready'], ['done'])
+    assert claims("The screens don't match the approved wireframes. It doesn\u2019t work now. I won't say done yet.") == ([], [])

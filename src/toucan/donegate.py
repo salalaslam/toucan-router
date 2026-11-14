@@ -24,7 +24,8 @@ SOFT = re.compile(r"(?i)\b(done|ready|complete|completed|finished)\b")
 PLACE = re.compile(r"(?i)\b(dev|test site|staging|prod|production|preview|main site|experimental site|deployed|merged|"
                    r"on (?:the )?site|on test)\b")
 # Words just before a claim that make it not a claim: "not fixed", "isn't live yet".
-NEGATED = re.compile(r"(?i)\b(not|isn't|aren't|wasn't|weren't|isnt|arent|no|never|nor|yet to be|until|before)\s+(?:\w+\s+){0,2}$")
+NEGATED = re.compile(r"(?i)\b(not|no|never|nor|yet to be|until|before|cannot|"
+                     r"(?:is|are|was|were|do|does|did|wo|ca|have|has|had|could|would|should)n['\u2019]?t)\s+(?:\w+\s+){0,2}$")
 # A claim later in a sentence that starts with one of these is a plan, not a claim: "once it's live".
 FUTURE = re.compile(r"(?i)\b(once|when|whenever|will|i'll|we'll|it'll|after|until|as soon as|if|tell me|let me know|"
                     r"should be|would be|going to|expect|expected|target|aim)\b")
