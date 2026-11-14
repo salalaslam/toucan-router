@@ -105,4 +105,29 @@ Claude Code and Codex, through T3 Code. `toucan doctor` checks that at least one
 and Toucan reads the rate-limit messages both of them give. Those are the only two we have
 tested. Toucan doesn't work without T3 Code.
 
+## Why a server OS like Ubuntu Server, and not an agent-first distro like Omarchy?
+
+Toucan runs on any Linux with systemd user services, and that includes
+[Omarchy](https://omarchy.org). We still recommend putting Toucan, T3 Code and the agents on
+an always-on machine with a long-term support release, such as Ubuntu Server LTS or Debian.
+Keep Omarchy, or any agent-first desktop, as the machine you work from.
+
+- **It has to stay on.** Toucan syncs every few minutes, and colleagues message at any hour. A
+  laptop that sleeps, shuts its lid or restarts for an update stops waking threads. The
+  WhatsApp sync goes stale, and the Teams bot needs its public HTTPS URL to answer all the time.
+- **You choose when things change.** Omarchy is built on Arch Linux, a rolling release, so any
+  update can bring a new Python, systemd or kernel. An LTS release changes them only when you
+  upgrade it, and still gets security fixes. Toucan's CI runs on Ubuntu.
+- **Less within the agents' reach.** Routed messages come from other people and reach agents
+  that can run commands ([SECURITY.md](../SECURITY.md)). On your desktop those agents sit next
+  to your browser sessions, password manager and personal SSH keys. On a server account of
+  their own, they reach only what you put there.
+- **No desktop needed.** Toucan has no interface of its own, and T3 Code runs as a server you
+  open from a browser or its phone app, over your network or Tailscale. A desktop and its agent
+  features help the person sitting at the machine, and nobody sits at this one.
+
+On a server, run `loginctl enable-linger "$USER"` once. Without it, systemd stops your user
+services, including the `toucan-sync` timer, when you log out of SSH. `toucan enable` doesn't
+do this for you.
+
 Descriptions of the other tools checked on 14 November 2026. Corrections welcome.

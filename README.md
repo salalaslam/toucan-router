@@ -45,7 +45,8 @@ Email (notmuch) ──┘    (allowlist)        └─> T3 thread "project-b" �
 
 You need Linux with systemd user services, Python 3.11 or newer, [uv](https://docs.astral.sh/uv/)
 or pipx, and [T3 Code](https://github.com/pingdotgg/t3code) running on the same machine with
-Claude Code or Codex signed in.
+Claude Code or Codex signed in. An always-on server with an LTS release works best
+([why](docs/faq.md#why-a-server-os-like-ubuntu-server-and-not-an-agent-first-distro-like-omarchy)).
 
 An agent sets Toucan up, not you. Paste this into Claude Code or Codex on that machine:
 
