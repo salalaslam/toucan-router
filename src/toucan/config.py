@@ -15,7 +15,7 @@ DEFAULTS = dict(rewake_minutes=15, wake_gap_minutes=2, max_wakes=3, claimed_stal
                 rotate_stall_minutes=60, owner_t3_threads=(), owner_whatsapp='', drafts_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
                 alert_url_file='', upload_command='toucan-upload-loom', transcribe='', followup_minutes=120,
                 router_general_thread='', router_commands=(), router_timeout_seconds=60, router_history=20,
-                router_budget_seconds=90, router_hold_minutes=5, router_ask_minutes=15, max_bounces=2, thread_rules='', pause_file='', ack_emoji='eyes')
+                router_budget_seconds=90, router_hold_minutes=5, router_ask_minutes=15, max_bounces=2, thread_rules='', pause_file='', ack_emoji='eyes', done_gate='off')
 ROUTER_MODES = ('off', 'shadow', 'live')
 ROUTER_BUDGET_MAX = 180  # seconds; keeps a sync well inside the timer unit's 5-minute timeout
 PHONE = re.compile(r'^\d+@s\.whatsapp\.net$')
@@ -34,7 +34,7 @@ SOURCE_DEFAULTS = dict(whatsapp=dict(store='~/.local/state/wacli', account='wa',
                        teams=dict(bot_db='~/.local/state/toucan-bot/bot.db', stale_minutes=5, service_unit=''),
                        email=dict(notmuch_config='', stale_minutes=60))
 TEXT_SETTINGS = {'owner_whatsapp', 'drafts_whatsapp', 'owner_teams_id', 'owner_name', 'timezone', 'alert_url', 'alert_url_file', 'upload_command', 'transcribe', 'ntfy',
-                 'router_general_thread', 'thread_rules', 'pause_file', 'ack_emoji'}
+                 'router_general_thread', 'thread_rules', 'pause_file', 'ack_emoji', 'done_gate'}
 LIST_SETTINGS = {'router_commands', 'owner_t3_threads'}
 
 
@@ -116,6 +116,8 @@ def validate(cfg):
         raise ValidationError('settings.router_timeout_seconds must not exceed router_budget_seconds')
     if not isinstance(settings.get('telemetry', True), bool):
         raise ValidationError('settings.telemetry must be true or false')
+    if settings['done_gate'] not in ('off', 'shadow', 'enforce'):
+        raise ValidationError('settings.done_gate must be "off", "shadow" or "enforce"')
     settings['owner_teams_id'] = settings['owner_teams_id'].lower()
     if 'ntfy' in settings and not settings['alert_url']:
         settings['alert_url'] = settings['ntfy']

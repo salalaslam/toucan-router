@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import cards, ledger, router, sources, t3
+from . import cards, donegate, ledger, router, sources, t3
 from .config import GROUP, PHONE, Refused, ValidationError, hook_warning, prefixed, reply_phone, timestamp
 from .effects import Effects, local_run
 from .storage import account_warning, event, insert, private_dir
@@ -79,10 +79,10 @@ class App:
         """Record a send Preflight refused. Its transaction has rolled back by now, so this uses a new one."""
         try:
             yield
-        except ledger.Held as held:
+        except (ledger.Held, donegate.Held) as held:
             with self.transaction():
                 for check in held.checks:
-                    self.record('preflight', held.thread, held.request, outbox=None, **check)
+                    self.record(getattr(held, 'kind', 'preflight'), held.thread, held.request, outbox=None, **check)
             raise
 
     def rows(self, sql, args=()):
@@ -1606,7 +1606,13 @@ class App:
             raise Refused('recipient hourly rate limit reached')
         # Judged on the text as written (person keys in tags), against the chat it goes to. The router's own
         # "which project?" question is exempt.
-        checks, people = [], None
+        checks, people, done = [], None, None
+        if kind == 'send' and 'asks_request' not in detail:
+            try:
+                done = donegate.gate(self, req, raw)
+            except donegate.Held as held:
+                held.thread, held.request = thread, req
+                raise
         if kind == 'send' and 'asks_request' not in detail and ledger.projects(self.cfg, thread):
             try:
                 checks = ledger.preflight(self, thread, recipient, f'{raw or ""}\n{body or ""}', override)
@@ -1624,6 +1630,8 @@ class App:
                     **(dict(people=people) if people is not None else {}), **detail)
         for check in checks:
             self.record('preflight', thread, req, outbox=out, **check)
+        if done:
+            self.record('done_gate', thread, req, outbox=out, **done)
         return out
 
     def _send_outbox(self, out, thread, req=None, keep_open=False, promise=None, due=None):

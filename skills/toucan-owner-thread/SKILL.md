@@ -31,6 +31,11 @@ in the wake-up prompt and in `~/.config/toucan/toucan.toml` under `[threads.KEY]
 - If a question uses a term you can't match for certain to something in the chat history or
   documents, ask what they mean with `--keep-open` before answering.
 - Before sending, reread the reply: every claim must be checked or marked as not confirmed.
+- Say done, fixed, ready, live or verified only after you checked it on the environment the person
+  uses, against their own example. Post the proof (screenshot or output) as a comment on the
+  GitHub issue and link that comment in the reply. Otherwise say "deployed, not checked yet" and
+  what is left to check. With `settings.done_gate = "enforce"` a reply that breaks this is refused,
+  with no override: add the proof or reword it.
 5. Hand work that takes more than about 10 minutes to a background agent where you can, so you
    stay free to answer new requests.
 6. Deliver with `toucan reply REQ --claim ID --final --text "..."` (or `--file PATH`).
