@@ -18,6 +18,7 @@ context_hours = 24
 ack_alert_minutes = 5
 fallback_minutes = 5
 ack_emoji = "eyes"   # Toucan reacts to new Teams requests on post_as_bot routes as they arrive; "" turns it off
+done_gate = "off"     # "enforce": a send that says done/fixed/ready/live needs a GitHub proof comment or "not checked yet"
 rotate_tokens = 200000       # ask owner threads to hand over at this context size
 rotate_stall_minutes = 60    # alert if a handover has not finished by then
 # transcribe = "chatgpt-transcribe"   # voice notes become text before they reach a thread
