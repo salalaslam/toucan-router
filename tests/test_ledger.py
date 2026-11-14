@@ -78,6 +78,20 @@ def test_enforce_refuses_until_overridden(world):
     assert checks(world)[-1]['override'] == 'client call in five minutes'
 
 
+def test_enforce_rules_limit_what_refuses(world):
+    setup(world, mode='enforce', enforce_rules=['burst'], burst_per_hour=1)
+    to_alice(world, WIREFRAMES)
+    assert world.sends[-1][5] == PHONE and rules(checks(world)[-1]) == ['pel_first']
+    with pytest.raises(Refused, match='already got 1 messages') as refused:
+        to_alice(world, WIREFRAMES)
+    assert 'has not gone to' not in str(refused.value)
+
+
+def test_enforce_rules_must_be_known_rules(world):
+    with pytest.raises(ValidationError, match='enforce_rules'):
+        setup(world, enforce_rules=['brust'])
+
+
 def test_pel_first_then_reply_or_wait(world):
     setup(world, mode='enforce')
     to_bob(world, WIREFRAMES)

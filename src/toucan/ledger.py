@@ -17,12 +17,13 @@ from .config import Refused, ValidationError
 from .effects import local_run
 
 MODES = ('off', 'shadow', 'enforce')
+RULES = ('pel_first', 'review_link', 'supersede', 'burst')
 DEFAULTS = dict(mode='shadow', people=[], pel='', github=[], self_github=[], review_hosts=[],
                 review_words=['wireframe', 'mock-up', 'mockup', 'mock up'],
                 topics={'sprint': r'(?i)\bsprint\s+(\d+(?:\.\d+)+)', 'issue': r'(?<![\w/&])#(\d+)\b'},
                 supersede=[r'(?i)\b(?:these|this|it) replaces?\b',
                            r'(?i)\b(?:replaces?|instead of) (?:the|my|our) [^.\n]{0,40}\b(?:I|we) sent\b'],
-                burst_per_hour=4, pel_wait_minutes=30, github_minutes=10)
+                burst_per_hour=4, pel_wait_minutes=30, github_minutes=10, enforce_rules=list(RULES))
 URL = re.compile(r'https?://[^\s<>()\[\]"\']+')
 TAG = re.compile(r'@\[([^\[\]]*)\]')
 REPO = re.compile(r'^[\w.-]+/[\w.-]+$')
@@ -56,9 +57,11 @@ def validate(key, project, people):
     where = f'project {key}: ledger'
     if ledger['mode'] not in MODES:
         raise ValidationError(f'{where}.mode must be "off", "shadow" or "enforce"')
-    for name in ('people', 'github', 'self_github', 'review_hosts', 'review_words', 'supersede'):
+    for name in ('people', 'github', 'self_github', 'review_hosts', 'review_words', 'supersede', 'enforce_rules'):
         if not isinstance(ledger[name], list) or any(not isinstance(v, str) or not v.strip() for v in ledger[name]):
             raise ValidationError(f'{where}.{name} must be a list of text')
+    if any(r not in RULES for r in ledger['enforce_rules']):
+        raise ValidationError(f'{where}.enforce_rules must list rules from {", ".join(RULES)}')
     if any(p not in people for p in ledger['people']):
         raise ValidationError(f'{where}.people must be configured person keys')
     if 'pel' not in raw and project.get('escalate_to') in ledger['people']:
@@ -290,9 +293,12 @@ def preflight(app, thread, chat, text, override=None):
             results.append(result)
     for result in results:
         result['override'] = (override or '').strip() or None
-    held = [r for r in results if r['verdict'] == 'hold' and r['mode'] == 'enforce']
+    # In enforce mode only the rules in enforce_rules refuse a send; the others are recorded as in shadow mode.
+    enforced = lambda r: [reason for reason in r.get('reasons', ())
+                          if reason['rule'] in app.cfg['projects'][r['project']]['ledger']['enforce_rules']]
+    held = [r for r in results if r['verdict'] == 'hold' and r['mode'] == 'enforce' and enforced(r)]
     if held and not (override or '').strip():
-        lines = [f'- {reason["text"]}' for r in held for reason in r['reasons']]
+        lines = [f'- {reason["text"]}' for r in held for reason in enforced(r)]
         raise Held('Preflight held this send:\n' + '\n'.join(lines) +
                    '\nFix the message, or send it anyway with --override "why it must go now".',
                    [dict(r, refused=True) for r in results])
