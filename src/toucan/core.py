@@ -1403,7 +1403,8 @@ class App:
 
     def sync_reactions(self, now, problems):
         """Keep one reaction on each Teams request message in an act route that posts as the bot, showing
-        its stage: received (new or held), working (claimed, escalated or done) and done (closed with a reply).
+        its stage: received (new or held), working (claimed, escalated or done) and done (closed with a reply;
+        an uncertain delivery counts, since the thread closed it after checking).
         Messages one person sends before Toucan has answered the earlier ones form a burst: only the newest
         carries the reaction, at the stage of the least advanced message in it, and earlier ones lose theirs.
         A message an owner thread reacted to itself (`toucan react`) keeps only that reaction. A message
@@ -1416,7 +1417,7 @@ class App:
             return []
         rows = self.rows(
             "SELECT r.id,r.thread,r.state,r.close_reason,r.closed_at,r.reply_chat,r.message_id,m.msg_id,m.chat,m.sender_key,m.ts,"
-            "EXISTS(SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='send' AND o.state='sent') AS sent "
+            "EXISTS(SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='send' AND o.state IN ('sent','uncertain')) AS sent "
             "FROM requests r JOIN messages m ON m.id=r.message_id "
             f"WHERE r.reply_source='teams' AND r.mode='act' AND r.route IN ({','.join('?' * len(names))}) "
             "AND m.deleted=0 AND m.is_owner=0 AND m.ts>=? ORDER BY m.ts,r.id", (*names, now - ACK_LOOKBACK))

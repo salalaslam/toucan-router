@@ -160,3 +160,21 @@ def test_closed_without_a_reply_loses_the_reaction(world):
     world.advance(60)
     world.app.sync()
     assert changes(world) == [('req', 'eye', False), ('req', 'eye', True)]
+
+
+def test_closed_after_an_uncertain_reply_counts_as_answered(world):
+    bot(world)
+    stages(world)
+    world.seed()
+    req = world.request(teams=True)
+    claim = world.app.claim([req], 'project-a')
+    world.send_result = subprocess.CompletedProcess([], 4, '', 'ambiguous')
+    try:
+        world.app.deliver(req, claim, text='Here it is')
+    except RuntimeError:
+        pass
+    world.app.transition(req, claim, 'close', 'reply seen in Teams', thread='project-a')
+    world.send_result = subprocess.CompletedProcess([], 0, '{"ok": true}', '')
+    world.advance(60)
+    world.app.sync()
+    assert changes(world) == [('req', 'eye', False), ('req', 'check', False), ('req', 'eye', True)]
