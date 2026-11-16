@@ -85,8 +85,13 @@ When a message asked for things in several projects, Toucan may split it: each t
 request for its part, and the inbox says "only the part of this message about ...". Answer
 only your part. Your replies start with the project name automatically. Only one
 acknowledgement reaches the person per message: if another part already had a reply, a
-`--promise` reply is recorded but not sent, and on Teams the `eyes` reaction is shared, so
-just send the result with `--final` when it is ready.
+`--promise` reply is recorded but not sent, so just send the result with `--final` when it is ready.
+
+On Teams, Toucan keeps one reaction on each request message to show its stage: received, working
+once you claim it, and done after your final reply. When a person sends several messages before
+Toucan answers, only the newest has it. Don't add those reactions yourself. React with `toucan
+react` only when a reaction is the whole answer (thumbsup for "thanks" or "ok"); it replaces the
+stage reaction on that message.
 
 Escalate anything involving production, money, credentials or commitments to clients.
 Don't promise work that waits on an escalation; say it's waiting on a decision.

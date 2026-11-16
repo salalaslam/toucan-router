@@ -52,6 +52,7 @@ def responses(monkeypatch, replies):
 
 
 @pytest.mark.parametrize("emoji,expected", [
+    ("eye", "1f441_eye"),
     ("eyes", "1f440_eyes"),
     ("check", "2705_whiteheavycheckmark"),
     ("done", "2705_whiteheavycheckmark"),

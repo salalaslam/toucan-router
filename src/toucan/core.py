@@ -33,9 +33,11 @@ TAG = re.compile(r'@\[([^\[\]]*)\]')
 PING = re.compile(r'\s*ping[\s.!?]*', re.I)
 PING_WINDOW = 600  # a ping older than this when first seen gets no pong
 ACK_WINDOW = 2 * 3600  # a Teams message older than this gets no arrival reaction (a backlog after downtime)
-ACK_TRIES = 3  # failed or uncertain arrival reactions per message before giving up
-ACK_PER_SYNC = 3  # arrival reactions per sync; with ACK_TIMEOUT this bounds the delay to routing at 45 s
+ACK_LOOKBACK = 48 * 3600  # messages this recent have their stage reaction kept up to date
+ACK_TRIES = 3  # failed or uncertain calls per message and reaction before giving up
+ACK_PER_SYNC = 4  # toucan-bot reaction calls per sync (a message's swap may finish past it); bounds the delay to routing
 ACK_TIMEOUT = 15  # seconds per toucan-bot call
+REPLIED = ('replied', 'owner replied', 'owner posted')  # close reasons that mean the person got an answer
 ANSWER_FOLLOWUP_SECONDS = 600  # an unquoted owner message this soon after a card's answer still adds to it
 
 
@@ -496,7 +498,7 @@ class App:
         self.flush_notices(report['problems'])
         report['outage_notices'] = self.send_outage_notices(outage, report['problems'])
         # Before the router stage: people see the reaction within a sync of their message arriving.
-        report['acks'] = self.ack_arrivals(self.fx.now(), report['problems'])
+        report['acks'] = self.sync_reactions(self.fx.now(), report['problems'])
         # After the transaction: router commands can take seconds, and wakes have already gone out.
         try:
             report['router'] = router.run(self, now)
@@ -1390,51 +1392,115 @@ class App:
             raise RuntimeError('toucan-bot react failed; inspect request log')
         return dict(request=req, **detail)
 
-    def ack_arrivals(self, now, problems):
-        """Put settings.ack_emoji on each new requester message in a Teams act route that posts as the bot,
-        so the person sees it was picked up before an owner thread claims it. One reaction per message
-        (split parts share it). A message that ever had this reaction added or removed is left alone, so a
-        reaction the owner took off on done is not put back. Failed or uncertain calls retry on later syncs."""
-        emoji = self.settings['ack_emoji']
+    def stage_emojis(self):
+        """The reaction for received, working and done. A stage left empty shows the stage before it,
+        so ack_emoji alone keeps one reaction from arrival to the end. An empty ack_emoji turns them off."""
+        emojis, last = [], ''
+        for key in ('ack_emoji', 'work_emoji', 'done_emoji'):
+            last = self.settings[key] or last
+            emojis.append(last)
+        return emojis if emojis[0] else []
+
+    def sync_reactions(self, now, problems):
+        """Keep one reaction on each Teams request message in an act route that posts as the bot, showing
+        its stage: received (new or held), working (claimed, escalated or done) and done (closed with a reply).
+        Messages one person sends before Toucan has answered the earlier ones form a burst: only the newest
+        carries the reaction, at the stage of the least advanced message in it, and earlier ones lose theirs.
+        A message an owner thread reacted to itself (`toucan react`) keeps only that reaction. A message
+        older than ACK_WINDOW that never had one gets none (a backlog after downtime). New reactions go on
+        before old ones come off. Failed or uncertain calls retry on later syncs, ACK_TRIES times each."""
+        emojis = self.stage_emojis()
         names = [r['name'] for r in self.cfg['routes']
                  if r['source'] == 'teams' and r['mode'] == 'act' and r.get('post_as_bot')]
-        if not emoji or not names or self.dry or self.shadow:
+        if not emojis or not names or self.dry or self.shadow:
             return []
         rows = self.rows(
-            "SELECT r.id,r.thread,r.reply_chat,r.message_id,m.msg_id FROM requests r JOIN messages m ON m.id=r.message_id "
+            "SELECT r.id,r.thread,r.state,r.close_reason,r.closed_at,r.reply_chat,r.message_id,m.msg_id,m.chat,m.sender_key,m.ts,"
+            "EXISTS(SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='send' AND o.state='sent') AS sent "
+            "FROM requests r JOIN messages m ON m.id=r.message_id "
             f"WHERE r.reply_source='teams' AND r.mode='act' AND r.route IN ({','.join('?' * len(names))}) "
-            "AND r.state IN ('new','held','claimed','escalated') AND m.deleted=0 AND m.is_owner=0 AND m.ts>=? ORDER BY r.id",
-            (*names, now - ACK_WINDOW))
-        done, messages = [], set()
+            "AND m.deleted=0 AND m.is_owner=0 AND m.ts>=? ORDER BY m.ts,r.id", (*names, now - ACK_LOOKBACK))
+        messages = {}
         for row in rows:
-            if len(done) >= ACK_PER_SYNC:
-                break
-            if row['message_id'] in messages:
-                continue  # split parts of one message share one reaction
-            messages.add(row['message_id'])
-            detail = dict(conversation_id=row['reply_chat'], message_id=row['msg_id'], emoji=emoji, removed=False)
-            seen = [json.loads(e['detail_json']) | dict(kind=e['kind']) for e in self.db.execute(
+            messages.setdefault(row['message_id'], []).append(row)
+        state = {}
+        for key, parts in messages.items():
+            events = [dict(json.loads(e['detail_json']), kind=e['kind']) for e in self.db.execute(
                 "SELECT kind,detail_json FROM events WHERE kind IN ('reaction_added','reaction_removed','reaction_failed',"
-                "'reaction_uncertain') AND request_id IN (SELECT id FROM requests WHERE message_id=?)", (row['message_id'],))]
-            seen = [e for e in seen if all(e.get(k) == detail[k] for k in ('conversation_id', 'message_id', 'emoji'))]
-            if any(e['kind'] in ('reaction_added', 'reaction_removed') for e in seen):
+                "'reaction_uncertain') AND request_id IN (SELECT id FROM requests WHERE message_id=?) ORDER BY id", (key,))]
+            events = [e for e in events if e.get('conversation_id') == parts[0]['reply_chat'] and e.get('message_id') == parts[0]['msg_id']]
+            auto = lambda e: bool(e.get('auto') or e.get('arrival'))
+            on, tries, maybe = {}, {}, set()  # maybe: an uncertain call may have left Toucan's reaction on
+            for e in events:
+                emoji = e['emoji']
+                if e['kind'] in ('reaction_added', 'reaction_removed'):
+                    on[emoji] = e['kind'] == 'reaction_added' and auto(e)
+                    maybe.discard(emoji)
+                    tries.pop((emoji, False), None), tries.pop((emoji, True), None)
+                else:
+                    tries[(emoji, bool(e.get('removed')))] = tries.get((emoji, bool(e.get('removed'))), 0) + 1
+                    if e['kind'] == 'reaction_uncertain' and auto(e):
+                        maybe.add(emoji)
+            stages = [3 if p['state'] == 'closed' and (p['close_reason'] in REPLIED or p['sent'])
+                      else 0 if p['state'] == 'closed' else 1 if p['state'] in ('new', 'held') else 2 for p in parts]
+            closed = [p['closed_at'] for p in parts if p['state'] == 'closed']
+            state[key] = dict(parts=parts, on=on, maybe=maybe, tries=tries, stages=stages,
+                              finished=max(closed) if len(closed) == len(parts) else None,
+                              manual=any(e['kind'] in ('reaction_added', 'reaction_removed') and not auto(e) for e in events),
+                              eligible=any(auto(e) for e in events) or parts[0]['ts'] >= now - ACK_WINDOW)
+        # Bursts: per chat and sender, a message joins the burst before it while any message in that burst
+        # was still unanswered when it arrived.
+        want, bursts = {}, {}
+        for key, item in state.items():  # in message order
+            want[key] = None
+            if item['manual']:
                 continue
-            if len(seen) >= ACK_TRIES:
-                problems[f'ack:{row["message_id"]}'] = (f'{row["thread"]}: request {row["id"]} has no {emoji} reaction '
-                                                        f'after {ACK_TRIES} tries; Teams bot may be down')
-                continue
-            with self.transaction():
-                self.record('reaction_pending', row['thread'], row['id'], arrival=True, **detail)
-            argv = ['toucan-bot', '--json', 'react', '--conversation', row['reply_chat'], '--message', row['msg_id'], '--emoji', emoji]
-            try:
-                result = local_run(self.fx, argv, timeout=ACK_TIMEOUT)
-                kind = 'reaction_failed' if result.returncode else 'reaction_added'
-                extra = {'error': (result.stderr or '')[:2000]} if result.returncode else {}
-            except Exception as error:
-                kind, extra = 'reaction_uncertain', {'error': type(error).__name__}
-            with self.transaction():
-                self.record(kind, row['thread'], row['id'], arrival=True, **detail, **extra)
-            done.append(dict(request=row['id'], result=kind))
+            part = item['parts'][0]
+            chain = bursts.get((part['chat'], part['sender_key']))
+            if chain and any(state[k]['finished'] is None or state[k]['finished'] > part['ts'] for k in chain):
+                chain.append(key)
+            else:
+                bursts[(part['chat'], part['sender_key'])] = chain = [key]
+            stages = [s for k in chain for s in state[k]['stages'] if s]
+            for k in chain:
+                want[k] = None
+            if stages and item['eligible']:
+                open_ = [s for s in stages if s < 3]
+                want[key] = emojis[(min(open_) if open_ else 3) - 1]
+        plan = []
+        for key, item in state.items():
+            target, on = want[key], item['on']
+            ops = [(target, False)] if target and not on.get(target) else []
+            ops += [(emoji, True) for emoji in sorted({e for e, present in on.items() if present} | item['maybe']) if emoji != target]
+            ops = [op for op in ops if item['tries'].get(op, 0) < ACK_TRIES]
+            if target and not on.get(target) and item['tries'].get((target, False), 0) >= ACK_TRIES:
+                part = item['parts'][-1]
+                problems[f'ack:{key}'] = (f'{part["thread"]}: request {part["id"]} has no {target} reaction '
+                                          f'after {ACK_TRIES} tries; Teams bot may be down')
+            if ops:
+                # First the newest messages that show nothing yet, then other changes, newest first.
+                plan.append((0 if not any(on.values()) and ops[0][1] is False else 1, -item['parts'][0]['ts'], key, ops))
+        done, calls = [], 0
+        for _, _, key, ops in sorted(plan):
+            if calls >= ACK_PER_SYNC:
+                break
+            part = state[key]['parts'][-1]
+            for emoji, remove in ops:
+                calls += 1
+                detail = dict(conversation_id=part['reply_chat'], message_id=part['msg_id'], emoji=emoji, removed=remove, auto=True)
+                with self.transaction():
+                    self.record('reaction_pending', part['thread'], part['id'], **detail)
+                argv = ['toucan-bot', '--json', 'react', '--conversation', part['reply_chat'], '--message', part['msg_id'], '--emoji', emoji]
+                argv += ['--remove'] if remove else []
+                try:
+                    result = local_run(self.fx, argv, timeout=ACK_TIMEOUT)
+                    kind = 'reaction_failed' if result.returncode else 'reaction_removed' if remove else 'reaction_added'
+                    extra = {'error': (result.stderr or '')[:2000]} if result.returncode else {}
+                except Exception as error:
+                    kind, extra = 'reaction_uncertain', {'error': type(error).__name__}
+                with self.transaction():
+                    self.record(kind, part['thread'], part['id'], **detail, **extra)
+                done.append(dict(request=part['id'], emoji=emoji, removed=remove, result=kind))
         return done
 
     def reacted(self, message_id, detail):

@@ -35,6 +35,7 @@ RETRY_401_DELAYS = (3, 5, 5)
 OPERATION_TIMEOUT = 25
 REACTION_RETRIES = 3
 REACTION_ALIASES = {
+    "eye": "1f441_eye",
     "eyes": "1f440_eyes",
     "check": "2705_whiteheavycheckmark",
     "done": "2705_whiteheavycheckmark",
@@ -419,7 +420,7 @@ def main(argv=None) -> int:
     to.add_argument("--to", help="person (their 1:1 with the signed-in user) or chat name, like `send --to`")
     to.add_argument("--conversation", help="conversation ID from `toucan-bot conversations`")
     r.add_argument("--message", required=True, help="Teams message ID from the bot store")
-    r.add_argument("--emoji", required=True, help="Teams reaction ID or eyes, check, done, pin, thumbsup")
+    r.add_argument("--emoji", required=True, help="Teams reaction ID or eye, eyes, check, done, pin, thumbsup")
     r.add_argument("--remove", action="store_true", help="remove the bot's own reaction")
     r.add_argument("--dry-run", action="store_true", help="print the chat, message and reaction without changing it")
     r.set_defaults(fn=cmd_react)
