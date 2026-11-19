@@ -51,6 +51,7 @@ toucan reply 42 --claim CLAIM --final --text 'Fixed and deployed to staging.'
 toucan reply 43 --claim CLAIM --promise 'send the test results' --due 3h --text 'On it, results in about 3 hours.'
 toucan reply 44 --claim CLAIM --keep-open --text 'Which environment?'
 toucan reply 42 --claim CLAIM --final --file /tmp/report.pdf --caption 'Report attached.'
+toucan reply 42 --claim CLAIM --final --text-file /tmp/reply.txt     # the file's contents are the message; --file with a .txt is refused
 toucan react 42 --claim CLAIM --emoji thumbsup        # Teams routes with post_as_bot only; replaces the stage reaction sync keeps (ack_emoji, work_emoji, done_emoji)
 toucan done 43 --claim CLAIM --note 'Finished; waiting on a decision.'
 toucan close 43 --claim CLAIM --reason 'No reply needed.'

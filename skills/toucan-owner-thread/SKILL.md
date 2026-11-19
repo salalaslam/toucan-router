@@ -38,7 +38,10 @@ in the wake-up prompt and in `~/.config/toucan/toucan.toml` under `[threads.KEY]
   with no override: add the proof or reword it.
 5. Hand work that takes more than about 10 minutes to a background agent where you can, so you
    stay free to answer new requests.
-6. Deliver with `toucan reply REQ --claim ID --final --text "..."` (or `--file PATH`).
+6. Deliver with `toucan reply REQ --claim ID --final --text "..."`. For a long or multi-line reply,
+   write it to a file and use `--text-file PATH`: the file's contents become the message. `--file`
+   sends an attachment (a PDF, image or page) with the message in `--caption`; a `.txt` passed to
+   `--file` is refused, because the person would get a bare text file instead of a message.
 
 ## Messaging work threads
 

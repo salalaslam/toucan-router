@@ -23,6 +23,20 @@ ACCURACY = ('Accuracy before speed. State something as fact only if you checked 
             'checked or marked as not confirmed.')
 
 
+
+TEXT_SUFFIXES = ('.txt', '.text')
+
+
+def read_text_file(path):
+    try:
+        with open(path, encoding='utf-8') as handle:
+            text = handle.read()
+    except OSError as error:
+        raise ValidationError(f'cannot read --text-file {path}: {error.strerror or error}') from None
+    except UnicodeDecodeError:
+        raise ValidationError(f'--text-file {path} is not UTF-8 text') from None
+    return text.strip('\n')
+
 def thread_rules(cfg, thread):
     """The owner's standing rules for a thread: settings.thread_rules, then each owned project's rules."""
     texts = [cfg['settings']['thread_rules']]
@@ -115,8 +129,12 @@ def parser():
         if name in ('reply', 'send'):
             body = sub.add_mutually_exclusive_group(required=True)
             body.add_argument('--text')
-            body.add_argument('--file')
+            body.add_argument('--text-file', metavar='PATH',
+                              help='send the contents of this UTF-8 file as the message text (for long or multi-line replies)')
+            body.add_argument('--file', help='send this file as an attachment; the message text goes in --caption')
             sub.add_argument('--caption', default='')
+            sub.add_argument('--attach-text', action='store_true',
+                             help='with --file: really attach a .txt file instead of being refused')
             sub.add_argument('--override', help='send even though Preflight would hold it; say why it must go now')
         if name == 'send':
             sub.add_argument('--route', required=True)
@@ -424,6 +442,15 @@ def dispatch(args, app):
                                 args.note, thread=args.thread)
         if args.caption and not args.file:
             raise ValidationError('--caption requires --file')
+        if args.attach_text and not args.file:
+            raise ValidationError('--attach-text requires --file')
+        if args.text_file is not None:
+            args.text = read_text_file(args.text_file)
+        if args.file and args.file.lower().endswith(TEXT_SUFFIXES) and not args.attach_text:
+            # Agents kept writing the reply to a .txt and passing --file, so the person got a bare text file.
+            raise ValidationError(f'--file {args.file} would arrive as a text-file attachment, not as the message; '
+                                  'use --text-file PATH to send its contents as the message text, '
+                                  'or add --attach-text if the file itself must be attached')
         if args.text is not None and not args.text.strip():
             raise ValidationError(f'{c} text cannot be empty')
         if c == 'send':

@@ -92,8 +92,8 @@ def test_send_tags_become_teams_mentions_on_the_bot_and_names_elsewhere(world, s
 
 
 @pytest.mark.parametrize('bot,name,content', [
-    (False, 'proof.txt', b'Evidence'),
-    (True, 'proof.txt', b'Evidence'),
+    (False, 'proof.pdf', b'%PDF-1.4 Evidence'),
+    (True, 'proof.pdf', b'%PDF-1.4 Evidence'),
     (True, 'proof.png', b'\x89PNG\r\n\x1a\n' + bytes(8)),
 ])
 def test_send_files_follow_transport_capabilities(world, send_cli, capsys, bot, name, content):
@@ -102,7 +102,7 @@ def test_send_files_follow_transport_capabilities(world, send_cli, capsys, bot, 
     file.write_bytes(content)
     args = ['send', '--route', 'group' if bot else 'alice-whatsapp', '--thread', 'project-a',
             '--file', str(file), '--caption', 'Evidence']
-    if bot and name.endswith('.txt'):
+    if bot and name.endswith('.pdf'):
         assert send_cli(args) == 2
         assert 'still images' in capsys.readouterr().err
         assert world.sends == [] and world.app.rows('SELECT * FROM outbox') == []
@@ -391,3 +391,21 @@ def test_inbox_tells_owner_threads_about_a_pause(world, monkeypatch, capsys, tmp
     pause.write_text('{"paused": true}')
     assert invoke(['inbox', '--thread', 'project-a']) == 0
     assert 'Work is paused. Keep answering' in capsys.readouterr().out
+
+
+def test_send_text_file_becomes_the_message_and_txt_attachments_are_refused(world, send_cli, capsys, tmp_path):
+    reply = tmp_path / 'reply.txt'
+    reply.write_text('Line one\n\n1) a question\n', encoding='utf-8')
+    base = ['send', '--route', 'alice-whatsapp', '--thread', 'project-a', '--chat', PHONE]
+    assert send_cli([*base, '--file', str(reply)]) == 2
+    assert '--text-file' in capsys.readouterr().err
+    assert world.sends == []
+    assert send_cli([*base, '--text-file', str(reply)]) == 0
+    assert world.sends == [['wacli', '--json', 'send', 'text', '--to', PHONE, '--message', 'Line one\n\n1) a question']]
+    assert send_cli([*base, '--file', str(reply), '--attach-text']) == 0
+    assert world.sends[-1][:5] == ['wacli', '--json', 'send', 'file', '--to']
+    (tmp_path / 'empty.txt').write_text('\n')
+    assert send_cli([*base, '--text-file', str(tmp_path / 'empty.txt')]) == 2
+    assert send_cli([*base, '--text-file', str(tmp_path / 'missing.txt')]) == 2
+    assert 'cannot read' in capsys.readouterr().err
+    assert len(world.sends) == 2
