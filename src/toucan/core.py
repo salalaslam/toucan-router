@@ -1839,6 +1839,9 @@ class App:
         waiting = self.rows(f"SELECT c.*,{cards.SEQ},r.thread,r.reply_person FROM cards c JOIN requests r ON r.id=c.request_id "
                             "WHERE c.closed_at IS NULL AND c.answered_at IS NULL AND r.state='escalated' AND (c.held=1 OR "
                             "EXISTS (SELECT 1 FROM outbox o WHERE o.id=c.outbox_id AND o.state='sent')) ORDER BY c.created_at,c.id")
+        # A card whose pull requests have all merged was settled elsewhere; asking again only confuses.
+        merged = self._merged_cards(waiting)
+        waiting = [c for c in waiting if cards.label(c) not in merged]
         legacy = self.rows("SELECT r.id,r.thread,r.reply_person FROM requests r WHERE r.state='escalated' "
                            'AND NOT EXISTS (SELECT 1 FROM cards c WHERE c.request_id=r.id AND c.closed_at IS NULL) ORDER BY r.id')
         handled = self.db.execute(
@@ -1850,6 +1853,8 @@ class App:
         since = lambda ts: datetime.fromtimestamp(ts, zone).strftime('%-d %b %H:%M')
         report = dict(waiting=[cards.label(c) for c in waiting] + [cards.card_id(r['id']) for r in legacy],
                       handled_yesterday=handled, sent=False, text=None)
+        if merged:
+            report['merged'] = merged
         if not report['waiting']:
             return report
         blocks = [cards.compact(c, c['thread'], name(c['reply_person']), since(c['created_at'])) for c in waiting]
@@ -1858,6 +1863,8 @@ class App:
         first = report['waiting'][0]
         text = (f'*Waiting on you: {len(report["waiting"])}*\n\n' + '\n\n'.join(blocks) +
                 f'\n\n{handled} handled without you yesterday.\nReply "{first} A" or "more {first}".')
+        if merged:
+            text += '\nNot listed, PR already merged: ' + ', '.join(f'{k} ({", ".join(v)})' for k, v in merged.items()) + '.'
         report['text'] = text
         if self.dry:
             return report
@@ -1867,9 +1874,28 @@ class App:
         with self.transaction():
             # A held card now counts as delivered through this list, so later lists keep showing it.
             self.db.execute('UPDATE cards SET held=0,outbox_id=? WHERE held=1 AND closed_at IS NULL', (out,))
-            self.record('digest', count=len(report['waiting']), handled=handled)
+            self.record('digest', count=len(report['waiting']), handled=handled, merged=merged or None)
         report['sent'] = True
         return report
+
+    def _merged_cards(self, waiting):
+        """{card label: ["#12", ...]} for waiting cards that name at least one pull request, all merged.
+        A failed lookup keeps the card in the list."""
+        states, merged = {}, {}
+        for c in waiting:
+            repos = [r for p in self.cfg['projects'].values() if p.get('thread') == c['thread']
+                     for r in (p.get('ledger') or {}).get('github', [])]
+            prs = cards.pull_requests(c, repos)
+            for pr in prs:
+                if pr not in states:
+                    try:
+                        result = self.fx.run(['gh', 'pr', 'view', str(pr[1]), '-R', pr[0], '--json', 'state', '-q', '.state'])
+                        states[pr] = result.stdout.strip() if result.returncode == 0 else None
+                    except Exception:
+                        states[pr] = None
+            if prs and all(states[pr] == 'MERGED' for pr in prs):
+                merged[cards.label(c)] = [f'#{n}' for _, n in prs]
+        return merged
 
     def retriage(self):
         """Hand every escalation from before decision cards back to its thread. The thread settles

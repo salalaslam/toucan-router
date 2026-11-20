@@ -55,6 +55,20 @@ def label(card):
 SEQ = '(SELECT count(*) FROM cards s WHERE s.request_id=c.request_id AND s.id<=c.id) AS seq'
 
 
+PR_URL = re.compile(r'github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)')
+PR_BARE = re.compile(r'(?<!\w)PR\s*#?(\d+)(?!\w)', re.IGNORECASE)
+
+
+def pull_requests(card, repos):
+    """(repo, number) for every pull request a card names: full GitHub links, and "PR #12" when the
+    thread's project has exactly one repository to read it against."""
+    text = ' '.join(str(card[k] or '') for k in ('want', 'question', 'detail', 'options_json', 'updates_json') if k in card.keys())
+    found = {(repo, int(n)) for repo, n in PR_URL.findall(text)}
+    if len(repos) == 1:
+        found |= {(repos[0], int(n)) for n in PR_BARE.findall(text)}
+    return sorted(found)
+
+
 def validate(category, want, question, options, pick):
     """The hard gate. Returns (want, question, options, pick index) or raises Refused."""
     problems = []

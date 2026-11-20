@@ -392,3 +392,30 @@ def test_t3_answer_unavailable_history_fails_closed(world):
     with pytest.raises(Refused, match='no matching'):
         world.app.answer(f'T{req}', 'B', OWNER_THREAD, 'Owner chose B')
     assert world.app.digest()['waiting'] == [f'T{req}']
+
+
+def test_digest_leaves_out_cards_whose_pull_requests_have_merged(world):
+    from test_ledger import setup
+    setup(world, github=['example/repo'])
+    states, calls, plain = {'109': 'MERGED', '110': 'OPEN', '111': 'MERGED'}, [], world.fx.run
+
+    def run(argv, timeout=None):
+        if argv[0] != 'gh':
+            return plain(argv)
+        calls.append(argv)
+        number = argv[3]
+        return subprocess.CompletedProcess(argv, 0 if number in states else 1, states.get(number, '') + '\n', '')
+    world.fx.run = run
+    card = lambda msg_id, question: escalate(world, msg_id, note='', question=question, options=['Yes', 'Not yet'])[0]
+    merged = card('merged', 'Merge PR #109 now?')
+    both = card('both', 'Merge PR 109 and https://github.com/example/repo/pull/110?')  # 110 is still open
+    failed = card('failed', 'Merge PR #112 now?')  # the lookup fails
+    other_repo = card('other', 'Merge https://github.com/example/other/pull/111?')
+    plain_card = card('plain', 'Release the billing fix now?')
+    world.advance(86400)
+    report = world.app.digest()
+    assert report['waiting'] == [f'T{both}', f'T{failed}', f'T{plain_card}']
+    assert report['merged'] == {f'T{merged}': ['#109'], f'T{other_repo}': ['#111']}
+    assert world.sends[-1][7].endswith(f'Not listed, PR already merged: T{merged} (#109), T{other_repo} (#111).')
+    assert ['gh', 'pr', 'view', '111', '-R', 'example/other', '--json', 'state', '-q', '.state'] in calls
+    assert sum(c[3] == '109' for c in calls) == 1  # one lookup per pull request per list
