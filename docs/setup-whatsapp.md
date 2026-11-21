@@ -101,6 +101,33 @@ active_from = "2026-01-01T00:00:00+00:00"
 For a group that includes a client, `reply_to = "alice"` sends every reply to Alice's own
 WhatsApp instead of the group, and `reply_prefix` adds a line at the top of each reply.
 
+### Photo bursts
+
+People often send a few photos right after a message ("add this one", then three photos). By
+default each photo is its own request. Set `photo_burst_seconds` on the route to fold them
+into one:
+
+```sh
+toucan config set routes.alice-whatsapp.photo_burst_seconds 30
+```
+
+(`toucan add route` takes `--photo-burst-seconds 30` for a new route.)
+
+A photo then joins the request of the same person's message just before it in the chat when:
+
+- it has no caption and doesn't quote another message (any text makes its own request),
+- it came at most `photo_burst_seconds` after that message (each photo of an album counts from
+  the one before it), and
+- that request is still `new`: not claimed, not held by the live router, and not split across
+  threads.
+
+Otherwise the photo becomes its own request, as before. Every message is kept. The inbox lists
+the photos under the request, after its message, marked as part of it. A photo that joins a
+request the thread has already read shows up in `toucan wait` like an edit; it doesn't add a
+wake. `photo_burst_seconds` must be shorter than `settings.wake_gap_minutes`; 30 suits most
+chats. `toucan sync --dry-run --json` lists the photos it would merge under each route's
+`merged`.
+
 ## Your own number
 
 `settings.owner_whatsapp` is your personal number's JID. Drafts and escalations go there, and

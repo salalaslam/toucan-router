@@ -97,7 +97,7 @@ def test_add_replace_and_remove_config_entities(agent):
 
 @pytest.mark.parametrize('source,flags', [
     ('teams', ['--post-as-bot', '--owner-reply-closes', '--reply-via-whatsapp']),
-    ('whatsapp', ['--reply-to', 'alice']),
+    ('whatsapp', ['--reply-to', 'alice', '--photo-burst-seconds', '30']),
     ('email', []),
 ])
 def test_add_route_source_flags(agent, source, flags):
@@ -110,6 +110,7 @@ def test_add_route_source_flags(agent, source, flags):
     cfg = load(path)
     assert cfg['routes'][0]['chats'] == [chat]
     if source == 'whatsapp':
+        assert cfg['routes'][0]['photo_burst_seconds'] == 30
         assert 'routes.inbox' in invoke('remove', 'person', 'alice', code=3)
 
 

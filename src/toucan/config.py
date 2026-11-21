@@ -26,7 +26,8 @@ KEYS = dict(settings=set(DEFAULTS) | {'ntfy', 'telemetry'}, people={'name', 'rol
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens', 'waiter'},
             projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes', 'rules', 'ledger'},
             routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
-                    'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'send_threads', 'active_ts'},
+                    'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'send_threads',
+                    'photo_burst_seconds', 'active_ts'},
             sources={'whatsapp': {'store', 'account', 'service_unit'},
                      'teams': {'bot_db', 'stale_minutes', 'service_unit'},
                      'email': {'notmuch_config', 'stale_minutes'}}, t3={'db'})
@@ -267,6 +268,11 @@ def validate(cfg):
         if 'reply_to' in route and (route['source'] != 'whatsapp' or route['mode'] != 'act' or not reply_phone(cfg, route)):
             raise ValidationError(f'route {name}: reply_to must name a person with a WhatsApp phone JID, '
                                   'and only on WhatsApp act routes')
+        burst = route.get('photo_burst_seconds', 0)
+        if (type(burst) is not int or burst < 0 or (burst and route['source'] != 'whatsapp')
+                or burst >= settings['wake_gap_minutes'] * 60):
+            raise ValidationError(f'route {name}: photo_burst_seconds must be 0 (off) or a whole number of seconds, '
+                                  'shorter than settings.wake_gap_minutes, and only on WhatsApp routes')
         if not isinstance(route.get('reply_prefix', ''), str):
             raise ValidationError(f'route {name}: reply_prefix must be text')
         extra = route.get('send_threads', [])

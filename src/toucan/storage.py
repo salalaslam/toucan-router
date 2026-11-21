@@ -22,6 +22,7 @@ DECISIONS = '''CREATE TABLE IF NOT EXISTS {name} (
 INDEXES = '''
 CREATE INDEX IF NOT EXISTS request_thread ON requests(thread,state);
 CREATE INDEX IF NOT EXISTS request_message ON requests(message_id);
+CREATE INDEX IF NOT EXISTS request_messages_request ON request_messages(request_id);
 CREATE INDEX IF NOT EXISTS decision_request ON router_decisions(request_id);
 CREATE INDEX IF NOT EXISTS outbox_recipient ON outbox(to_chat,created_at);
 '''
@@ -40,6 +41,11 @@ CREATE TABLE IF NOT EXISTS outbox (
  error TEXT, created_at REAL, updated_at REAL, external_id TEXT);
 CREATE TABLE IF NOT EXISTS events (
  id INTEGER PRIMARY KEY, ts REAL, kind TEXT, thread TEXT, request_id INTEGER, detail_json TEXT);
+-- A caption-less photo sent right after a request's message joins that request instead of starting one
+-- (a route's photo_burst_seconds). The request keeps its first message; the photo is linked here.
+CREATE TABLE IF NOT EXISTS request_messages (
+ message_id INTEGER PRIMARY KEY REFERENCES messages(id), request_id INTEGER NOT NULL REFERENCES requests(id),
+ linked_at REAL);
 CREATE TABLE IF NOT EXISTS owner_answers (
  message_id INTEGER PRIMARY KEY REFERENCES messages(id), request_id INTEGER REFERENCES requests(id));
 CREATE TABLE IF NOT EXISTS transcripts (

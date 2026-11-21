@@ -232,6 +232,8 @@ def parser():
                 sub.add_argument('--' + flag)
             for flag in ('post-as-bot', 'owner-reply-closes', 'reply-via-whatsapp'):
                 sub.add_argument('--' + flag, action='store_true', default=None)
+            sub.add_argument('--photo-burst-seconds', type=int,
+                             help='WhatsApp: a photo with no caption sent this soon after the same person\'s request joins it')
     edit = commands.add_parser('config').add_subparsers(dest='action', required=True)
     for action in ('get', 'set', 'unset'):
         sub = edit.add_parser(action)
@@ -379,6 +381,8 @@ def dispatch(args, app):
                 req += (f', was escalated to {app.settings["owner_name"]} before decision cards and is back for a re-check: '
                         'settle it yourself, ask the requester, or close it if it is stale; escalate again only if it still '
                         'needs a decision only the owner can make, with `toucan escalate` (see --help)')
+            if m['request_id'] and m['merged_into']:
+                req += ', a photo sent right after its message, part of the same request'
             if m['request_id'] and m['part']:
                 req += (f', only the part of this message about {m["part_label"]} (shown first below); '
                         f'replies start with "{m["part_label"]}:" automatically')
@@ -585,7 +589,8 @@ def agent_command(args, effects, paths):
         elif args.kind == 'project':
             names = ('name', 'aliases', 'description', 'thread')
         else:
-            names = ('source', 'thread', 'mode', 'router', 'label', 'post_as_bot', 'owner_reply_closes', 'reply_to', 'reply_prefix', 'reply_via_whatsapp', 'active_from')
+            names = ('source', 'thread', 'mode', 'router', 'label', 'post_as_bot', 'owner_reply_closes', 'reply_to', 'reply_prefix',
+                     'reply_via_whatsapp', 'photo_burst_seconds', 'active_from')
         entry = {key: getattr(args, key) for key in names if getattr(args, key) is not None}
         if args.kind == 'thread':
             entry['hook_file'] = str(agentsetup.hooks_dir() / (configedit.key_name(args.key) + '.hook'))

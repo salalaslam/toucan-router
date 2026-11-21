@@ -82,6 +82,10 @@ change to an open request, like an edit. Screenshot download progress is not an 
 image becomes available, `toucan wait` and the inbox report the request once, without a fresh
 wake budget.
 
+On a WhatsApp route with `photo_burst_seconds`, caption-less photos sent right after a request's
+message join that request (see [setup-whatsapp](setup-whatsapp.md#photo-bursts)). The inbox
+shows them under it, marked as part of the same request.
+
 The first successful read of each route seeds earlier history as context. Later messages
 become requests only if they arrive after both that seed and `active_from`. To pick up older
 unanswered messages on purpose, run `toucan import-pending --route NAME --since ISO`.

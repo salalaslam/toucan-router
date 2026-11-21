@@ -129,13 +129,17 @@ def whatsapp(paths, chat, since, tracked):
             continue
         attachments = [{k: m[k] for k in ('media_type', 'filename', 'local_path') if m.get(k)}]
         text = m['text'] or m['display_text'] or m.get('media_caption') or ''
+        # A photo with no caption that quotes nothing; wacli's display text ("Sent image") is not a caption.
+        # Not stored: sync reads it to merge photo bursts and drops it.
+        bare = m.get('media_type') == 'image' and not (m['text'] or m.get('media_caption') or m.get('quoted_msg_id'))
         result.append(dict(source='whatsapp', account=paths.wa_account, chat=chat, msg_id=m['msg_id'],
                            sender_raw=m['sender_jid'], sender_name=m['sender_name'],
                            is_owner=int(bool(m['from_me'])), ts=m['ts'], text=text, own_text=text,
                            # wacli keeps the quoted message's ID, not its text.
                            quoted_ids=json.dumps([m['quoted_msg_id']] if m.get('quoted_msg_id') else []),
                            attachments_json=json.dumps([a for a in attachments if a]),
-                           edited=int(bool(m['edited'])), deleted=int(bool(m['revoked'] or m.get('deleted_for_me')))))
+                           edited=int(bool(m['edited'])), deleted=int(bool(m['revoked'] or m.get('deleted_for_me'))),
+                           bare_photo=bare))
     return result
 
 

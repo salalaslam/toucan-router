@@ -145,6 +145,33 @@ class App:
         report['created'].append(req)
         route_result['created'].append(dict(request=req, msg_id=m['msg_id'], chat=m['chat'], person=m['sender_key']))
 
+    def merge_photo(self, m, route, now, route_result):
+        """Link a caption-less photo to the request of the same person's message just before it in the chat,
+        when that came at most photo_burst_seconds earlier and its request is still new: one request, not
+        one per photo. The request must be unclaimed, not held by the live router and not split into parts.
+        Text always makes its own request. Returns the request, or None when the photo needs its own."""
+        prev = self.db.execute('SELECT id,ts,deleted FROM messages WHERE route=? AND chat=? AND sender_key=? AND id!=? '
+                               'AND (ts<? OR (ts=? AND id<?)) ORDER BY ts DESC,id DESC LIMIT 1',
+                               (route['name'], m['chat'], m['sender_key'], m['id'], m['ts'], m['ts'], m['id'])).fetchone()
+        if not prev or prev['deleted'] or m['ts'] - prev['ts'] > route['photo_burst_seconds']:
+            return None
+        reqs = self.rows('SELECT id,thread,state,routing FROM requests WHERE message_id=? OR id IN '
+                         '(SELECT request_id FROM request_messages WHERE message_id=?)', (prev['id'], prev['id']))
+        if len(reqs) != 1 or reqs[0]['state'] != 'new' or reqs[0]['routing'] is not None:
+            return None
+        req = reqs[0]
+        insert(self.db, 'request_messages', message_id=m['id'], request_id=req['id'], linked_at=now)
+        # A thread that already read the inbox sees the photo through `toucan wait`; the wake budget is unchanged.
+        self.db.execute('UPDATE requests SET change_pending=1 WHERE id=?', (req['id'],))
+        self.record('photo_merged', req['thread'], req['id'], msg_id=m['msg_id'])
+        route_result['merged'].append(dict(request=req['id'], msg_id=m['msg_id'], chat=m['chat'], person=m['sender_key']))
+        return req['id']
+
+    def message_requests(self, message):
+        """Active requests a stored message belongs to: its own (several when split) or the one a photo joined."""
+        return self.rows(f'SELECT id,thread FROM requests WHERE (message_id=? OR id IN (SELECT request_id FROM '
+                         f'request_messages WHERE message_id=?)) AND state IN {ACTIVE}', (message, message))
+
     def owner_chats(self, mapping):
         owner = self.settings['owner_whatsapp']
         return [owner, *(lid for lid, pn in mapping.items() if pn == owner)] if PHONE.fullmatch(owner) else []
@@ -363,16 +390,19 @@ class App:
                             watermarks[key] = latest
                         else:
                             tracked = [r['msg_id'] for r in self.db.execute(
-                                f'SELECT DISTINCT m.msg_id FROM messages m LEFT JOIN requests r ON r.message_id=m.id '
+                                f'SELECT DISTINCT m.msg_id FROM messages m LEFT JOIN request_messages l ON l.message_id=m.id '
+                                f'JOIN requests r ON r.message_id=m.id OR r.id=l.request_id '
                                 f'WHERE m.route=? AND (? OR m.chat=?) AND r.state IN {ACTIVE}',
                                 (route['name'], route['source'] == 'email', '' if isinstance(chat, list) else chat))]
                             batch.extend(self.read_route(route, chat, since, tracked))
                 except (OSError, ValueError, KeyError, sqlite3.Error):
                     problems['health:route:' + route['name']] = f'{route["name"]}: archive unavailable or locked; skipped'
                     continue
-                route_result = dict(route=route['name'], messages=len(batch), seeded=not bool(seeded), created=[])
+                route_result = dict(route=route['name'], messages=len(batch), seeded=not bool(seeded), created=[], merged=[])
+                photos = []  # caption-less photos that may join the request before them, once the batch is stored
                 report['routes'].append(route_result)
                 for m in batch:
+                    bare = m.pop('bare_photo', False)
                     if m['source'] == 'whatsapp' and self.db.execute(
                             'SELECT 1 FROM meta WHERE key=?',
                             ('card-command:' + m['chat'] + ':' + m['msg_id'],)).fetchone():
@@ -410,14 +440,13 @@ class App:
                                 self.new_request(m, route, mapping, report, route_result)
                             self.db.execute('UPDATE messages SET deferred_cutoff=NULL WHERE id=?', (old['id'],))
                         if changed:
-                            reqs = self.rows(f'SELECT id,thread FROM requests WHERE message_id=? AND state IN {ACTIVE}', (old['id'],))
-                            for req in reqs:
+                            for req in self.message_requests(old['id']):
                                 self.db.execute('UPDATE requests SET source_changed=1,change_pending=1,wakes=0,last_wake_at=NULL WHERE id=?', (req['id'],))
                                 self.record('source_changed', req['thread'], req['id'], deleted=bool(m['deleted']))
                         elif ready:
                             # A screenshot finished downloading: tell `toucan wait` and the inbox once,
                             # without calling it an edit or giving the request a fresh wake budget.
-                            for req in self.rows(f'SELECT id,thread FROM requests WHERE message_id=? AND state IN {ACTIVE}', (old['id'],)):
+                            for req in self.message_requests(old['id']):
                                 self.db.execute('UPDATE requests SET change_pending=1 WHERE id=?', (req['id'],))
                                 self.record('attachment_ready', req['thread'], req['id'])
                     else:
@@ -428,9 +457,15 @@ class App:
                                     (not m['sender_raw'] or m['sender_key'] in route['requesters']) else None)
                         m['id'] = insert(self.db, 'messages', **m, route=route['name'], first_seen=now, last_seen=now,
                                          deferred_cutoff=deferred)
-                        if asks:
+                        if asks and bare and route.get('photo_burst_seconds'):
+                            photos.append(m)
+                        elif asks:
                             self.new_request(m, route, mapping, report, route_result)
                     report['ingested'] += 1
+                # In time order, so each photo of an album can join the request the one before it joined.
+                for m in sorted(photos, key=lambda m: (m['ts'], m['id'])):
+                    if not self.merge_photo(m, route, now, route_result):
+                        self.new_request(m, route, mapping, report, route_result)
                 for key, latest in watermarks.items():
                     self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (key, json.dumps(latest)))
                 if not seeded:
@@ -1921,14 +1956,17 @@ class App:
             # A request another thread holds (forwarded or handed over) is context here, not this thread's work.
             # One row per message, or per request of this thread when it holds several parts of one message.
             # A request held by the router is nobody's yet, so its message is plain context.
-            other = 'SELECT {} FROM requests o WHERE o.message_id=m.id AND o.thread!=? AND o.routing IS NULL ORDER BY o.id LIMIT 1'
+            # A photo merged into a request (request_messages) shows under that request, after its message.
+            other = ('SELECT {} FROM requests o WHERE (o.message_id=m.id OR o.id=l.request_id) AND o.thread!=? '
+                     'AND o.routing IS NULL ORDER BY o.id LIMIT 1')
             messages = self.rows(f'SELECT m.*,r.id AS request_id,r.state,r.promise,r.promise_due,r.part,r.part_label,r.route_reason,'
                                  f'({other.format("o.id")}) AS other_request,({other.format("o.thread")}) AS other_thread,'
-                                 f'a.request_id AS answers_request FROM messages m '
-                                 f'LEFT JOIN requests r ON r.message_id=m.id AND r.thread=? AND r.routing IS NULL '
+                                 f'l.request_id AS merged_into,a.request_id AS answers_request FROM messages m '
+                                 f'LEFT JOIN request_messages l ON l.message_id=m.id '
+                                 f'LEFT JOIN requests r ON (r.message_id=m.id OR r.id=l.request_id) AND r.thread=? AND r.routing IS NULL '
                                  f'LEFT JOIN owner_answers a ON a.message_id=m.id LEFT JOIN requests ar ON ar.id=a.request_id '
                                  f'WHERE m.route IN ({marks}) AND (m.ts>=? OR (m.ts=0 AND m.first_seen>=?) OR ar.state IN {OPEN} '
-                                 f'OR EXISTS (SELECT 1 FROM requests o WHERE o.message_id=m.id AND o.state IN {ACTIVE})) '
+                                 f'OR EXISTS (SELECT 1 FROM requests o WHERE (o.message_id=m.id OR o.id=l.request_id) AND o.state IN {ACTIVE})) '
                                  f'ORDER BY m.chat,m.ts,m.id,r.id',
                                  (thread, thread, thread, *sorted(routes), self.fx.now() - self.settings['context_hours'] * 3600,
                                   self.fx.now() - self.settings['context_hours'] * 3600))
@@ -1949,6 +1987,7 @@ class App:
         created = []
         with self.transaction():
             for m in batch:
+                m.pop('bare_photo', None)
                 person = sources.person_for(self.cfg, m['source'], m['sender_raw'], mapping)
                 if not m['ts'] or m['is_owner'] or m['deleted'] or person not in route['requesters']:
                     continue

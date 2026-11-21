@@ -150,6 +150,9 @@ def test_send_failure_is_recorded_and_returns_operational_exit(world, send_cli, 
     ('source = "whatsapp"', 'source = "whatsapp"\nreply_to = "missing"', 'reply_to'),
     ('chats = ["group:chat"]', 'chats = ["group:chat"]\nreply_to = "other"', 'only on WhatsApp act routes'),
     ('source = "whatsapp"', 'source = "whatsapp"\nreply_prefix = 1', 'reply_prefix'),
+    ('source = "whatsapp"', 'source = "whatsapp"\nphoto_burst_seconds = 120', 'shorter than settings.wake_gap_minutes'),
+    ('source = "whatsapp"', 'source = "whatsapp"\nphoto_burst_seconds = 1.5', 'photo_burst_seconds'),
+    ('chats = ["group:chat"]', 'chats = ["group:chat"]\nphoto_burst_seconds = 30', 'only on WhatsApp routes'),
 ])
 def test_invalid_config_fails_clearly(world, old, new, match):
     world.config_path.write_text(world.config_text.replace(old, new, 1))

@@ -74,6 +74,7 @@ mode = "act"
 requesters = ["alice"]
 active_from = "2026-10-17T00:00:00+00:00"
 # router = "shadow"   # log which thread the router would pick; routing stays as it is ("live" routes for real)
+# photo_burst_seconds = 30   # a photo with no caption sent this soon after a request joins it
 
 # [projects.project-a]
 # name = "Project A"

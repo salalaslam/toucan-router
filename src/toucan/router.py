@@ -250,7 +250,9 @@ def linked(db, m, live=False):
     if not ids:
         return None
     marks = ','.join('?' for _ in ids)
-    row = db.execute(f'SELECT r.message_id FROM messages q JOIN requests r ON r.message_id=q.id WHERE q.source=? AND q.route=? '
+    # A quoted photo that joined a request (request_messages) leads to that request.
+    row = db.execute(f'SELECT r.message_id FROM messages q LEFT JOIN request_messages l ON l.message_id=q.id '
+                     f'JOIN requests r ON r.message_id=q.id OR r.id=l.request_id WHERE q.source=? AND q.route=? '
                      f'AND q.msg_id IN ({marks}) AND r.id!=? ORDER BY r.id DESC LIMIT 1',
                      (m['source'], m['route'], *ids, m['request'])).fetchone()
     if row:
