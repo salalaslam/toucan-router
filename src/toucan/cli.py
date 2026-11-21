@@ -230,7 +230,7 @@ def parser():
             sub.add_argument('--router', help='off (default), shadow (log which thread the router would pick) or live (route)')
             for flag in ('label', 'reply-to', 'reply-prefix', 'active-from'):
                 sub.add_argument('--' + flag)
-            for flag in ('post-as-bot', 'owner-reply-closes', 'reply-via-whatsapp'):
+            for flag in ('post-as-bot', 'owner-reply-closes', 'reply-via-whatsapp', 'quote-replies'):
                 sub.add_argument('--' + flag, action='store_true', default=None)
     edit = commands.add_parser('config').add_subparsers(dest='action', required=True)
     for action in ('get', 'set', 'unset'):
@@ -585,7 +585,7 @@ def agent_command(args, effects, paths):
         elif args.kind == 'project':
             names = ('name', 'aliases', 'description', 'thread')
         else:
-            names = ('source', 'thread', 'mode', 'router', 'label', 'post_as_bot', 'owner_reply_closes', 'reply_to', 'reply_prefix', 'reply_via_whatsapp', 'active_from')
+            names = ('source', 'thread', 'mode', 'router', 'label', 'post_as_bot', 'owner_reply_closes', 'reply_to', 'reply_prefix', 'reply_via_whatsapp', 'quote_replies', 'active_from')
         entry = {key: getattr(args, key) for key in names if getattr(args, key) is not None}
         if args.kind == 'thread':
             entry['hook_file'] = str(agentsetup.hooks_dir() / (configedit.key_name(args.key) + '.hook'))

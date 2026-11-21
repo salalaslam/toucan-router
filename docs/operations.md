@@ -230,9 +230,9 @@ For each new request it tries these steps in order and stops at the first that a
 
 1. **Reply or quote.** The message replies to or quotes a request's message, or a reply
    Toucan sent for one: that request's thread. WhatsApp uses the quoted message ID wacli
-   stores. Teams uses the bot store's `reply_to_id`, quoted-reply entities and message
-   references. Email uses `In-Reply-To`, read from the message file. Without that linkage
-   the step is skipped.
+   stores (the inbox also shows the quoted message below the request). Teams uses the bot
+   store's `reply_to_id`, quoted-reply entities and message references. Email uses
+   `In-Reply-To`, read from the message file. Without that linkage the step is skipped.
 2. **Project named.** Project keys, names and aliases found in the message's own text, not in
    quoted text (for email, lines starting with `>` and everything after an `On ... wrote:`
    line). Exactly one project: its thread. Two or more go to step 4.

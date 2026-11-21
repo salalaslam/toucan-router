@@ -101,6 +101,24 @@ active_from = "2026-01-01T00:00:00+00:00"
 For a group that includes a client, `reply_to = "alice"` sends every reply to Alice's own
 WhatsApp instead of the group, and `reply_prefix` adds a line at the top of each reply.
 
+## Quoted messages
+
+When someone replies to an earlier message, the inbox shows that message below theirs as
+`Quote (from NAME):` lines, with its text and any attachment's local path, however old it is.
+A quoted message wacli never stored is named by its ID instead. Quoted text is context: the
+router reads only the sender's own words for project names.
+
+`quote_replies = true` on a WhatsApp route sends each reply to a request as a WhatsApp reply
+that quotes the request's message (`wacli send --reply-to`), so the person sees which message
+it answers. It applies only when the reply goes to the chat the message came from (a 1:1
+chat's phone and `@lid` JIDs count as one), and only when wacli has the message's content to
+quote. If wacli refuses the quote anyway, it does so before sending, and Toucan sends the reply
+unquoted and records a `quote_dropped` event. It is off by default.
+
+```sh
+toucan config set routes.alice-whatsapp.quote_replies true --json
+```
+
 ## Your own number
 
 `settings.owner_whatsapp` is your personal number's JID. Drafts and escalations go there, and

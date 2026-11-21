@@ -26,7 +26,8 @@ KEYS = dict(settings=set(DEFAULTS) | {'ntfy', 'telemetry'}, people={'name', 'rol
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens', 'waiter'},
             projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes', 'rules', 'ledger'},
             routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
-                    'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'send_threads', 'active_ts'},
+                    'post_as_bot', 'owner_reply_closes', 'reply_via_whatsapp', 'reply_to', 'reply_prefix', 'send_threads', 'active_ts',
+                    'quote_replies'},
             sources={'whatsapp': {'store', 'account', 'service_unit'},
                      'teams': {'bot_db', 'stale_minutes', 'service_unit'},
                      'email': {'notmuch_config', 'stale_minutes'}}, t3={'db'})
@@ -232,7 +233,7 @@ def validate(cfg):
         if route['source'] == 'email':
             if route['mode'] != 'draft':
                 raise ValidationError(f'route {name}: email is read-only, Toucan never sends email')
-            if any(k in route for k in ('post_as_bot', 'owner_reply_closes', 'reply_to', 'reply_via_whatsapp')):
+            if any(k in route for k in ('post_as_bot', 'owner_reply_closes', 'reply_to', 'reply_via_whatsapp', 'quote_replies')):
                 raise ValidationError(f'route {name}: reply delivery options are invalid on email routes')
         if 'reply_via_whatsapp' in route and (type(route['reply_via_whatsapp']) is not bool or route['source'] != 'teams' or route['mode'] != 'act'):
             raise ValidationError(f'route {name}: reply_via_whatsapp is only valid on Teams act routes and must be a boolean')
@@ -264,6 +265,8 @@ def validate(cfg):
             raise ValidationError(f'route {name}: post_as_bot must be true or false, and only on Teams routes')
         if not isinstance(route.get('owner_reply_closes', False), bool) or (route.get('owner_reply_closes') and route['source'] != 'teams'):
             raise ValidationError(f'route {name}: owner_reply_closes must be true or false, and only on Teams routes')
+        if not isinstance(route.get('quote_replies', False), bool) or (route.get('quote_replies') and route['source'] != 'whatsapp'):
+            raise ValidationError(f'route {name}: quote_replies must be true or false, and only on WhatsApp routes')
         if 'reply_to' in route and (route['source'] != 'whatsapp' or route['mode'] != 'act' or not reply_phone(cfg, route)):
             raise ValidationError(f'route {name}: reply_to must name a person with a WhatsApp phone JID, '
                                   'and only on WhatsApp act routes')

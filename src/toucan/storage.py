@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS outbox (
  id INTEGER PRIMARY KEY, attempt_id TEXT UNIQUE, request_id INTEGER REFERENCES requests(id),
  kind TEXT CHECK(kind IN ('send','draft','escalation')), source TEXT, to_chat TEXT, text TEXT, file TEXT,
  state TEXT CHECK(state IN ('pending','sending','sent','failed','uncertain')),
- error TEXT, created_at REAL, updated_at REAL, external_id TEXT);
+ error TEXT, created_at REAL, updated_at REAL, external_id TEXT, quote_id TEXT);
 CREATE TABLE IF NOT EXISTS events (
  id INTEGER PRIMARY KEY, ts REAL, kind TEXT, thread TEXT, request_id INTEGER, detail_json TEXT);
 CREATE TABLE IF NOT EXISTS owner_answers (
@@ -126,6 +126,7 @@ def migrate(db):
     for table, fields in (('messages', (('deferred_cutoff', 'REAL'), ('mentions_json', 'TEXT'), ('quoted_ids', 'TEXT'),
                                         ('own_text', 'TEXT'))),
                           ('requests', (('promise', 'TEXT'), ('promise_due', 'REAL'))),
+                          ('outbox', (('quote_id', 'TEXT'),)),
                           ('cards', (('delegate_jid', 'TEXT'), ('delegate_name', 'TEXT'),
                                      ('wait_minutes', 'INTEGER'), ('forward_outbox', 'INTEGER'),
                                      ('answered_by', 'TEXT')))):

@@ -113,6 +113,33 @@ def noise(m):
             and not m.get('media_caption') and not m.get('revoked') and not m.get('deleted_for_me'))
 
 
+QUOTE_CHARS = 1500  # of a quoted message's text shown with the reply that quotes it
+QUOTE_MEDIA = ('image', 'video', 'gif', 'audio', 'document', 'sticker')  # media wacli can quote back
+
+
+def quote_block(db, chat, msg_id):
+    """The message a WhatsApp reply quotes, as clearly marked context below the reply's own text.
+    Read from the same store snapshot, however old it is; a quote wacli never stored says so."""
+    row = db.execute('SELECT * FROM messages WHERE chat_jid=? AND msg_id=? ORDER BY rowid DESC LIMIT 1',
+                     (chat, msg_id)).fetchone()
+    if not row:
+        return f'\n\nQuote: an earlier message ({msg_id}) that is not in the local WhatsApp store.'
+    q = dict(row)
+    who = 'sent from this number' if q.get('from_me') else 'from ' + (q.get('sender_name') or q.get('sender_jid') or 'unknown sender')
+    lines = []
+    if q.get('revoked') or q.get('deleted_for_me'):
+        lines.append('(deleted)')
+    else:
+        said = q.get('text') or q.get('media_caption') or ('' if q.get('media_type') else q.get('display_text')) or ''
+        if len(said) > QUOTE_CHARS:
+            said = said[:QUOTE_CHARS] + '…'
+        lines += said.splitlines()
+        if q.get('media_type'):
+            name = f' {q["filename"]}' if q.get('filename') else ''
+            lines.append(f'[{q["media_type"]}{name}] ' + (q.get('local_path') or 'not downloaded'))
+    return f'\n\nQuote ({who}):\n' + '\n'.join('> ' + line for line in lines or [''])
+
+
 def whatsapp(paths, chat, since, tracked):
     db = readonly(paths.wa / 'wacli.db')
     try:
@@ -120,23 +147,52 @@ def whatsapp(paths, chat, since, tracked):
         marks = ','.join('?' for _ in tracked) or 'NULL'
         rows = db.execute(f'SELECT * FROM messages WHERE chat_jid=? AND (ts>=? OR msg_id IN ({marks}))',
                           (chat, since, *tracked)).fetchall()
+        result = []
+        for row in rows:
+            m = dict(row)
+            if noise(m):
+                continue
+            attachments = [{k: m[k] for k in ('media_type', 'filename', 'local_path') if m.get(k)}]
+            own = m['text'] or m['display_text'] or m.get('media_caption') or ''
+            # text adds the quoted message for the thread to read; own_text is what the sender wrote.
+            text = own + (quote_block(db, chat, m['quoted_msg_id']) if m.get('quoted_msg_id') else '')
+            result.append(dict(source='whatsapp', account=paths.wa_account, chat=chat, msg_id=m['msg_id'],
+                               sender_raw=m['sender_jid'], sender_name=m['sender_name'],
+                               is_owner=int(bool(m['from_me'])), ts=m['ts'], text=text, own_text=own,
+                               quoted_ids=json.dumps([m['quoted_msg_id']] if m.get('quoted_msg_id') else []),
+                               attachments_json=json.dumps([a for a in attachments if a]),
+                               edited=int(bool(m['edited'])), deleted=int(bool(m['revoked'] or m.get('deleted_for_me')))))
     finally:
         db.close()
-    result = []
-    for row in rows:
-        m = dict(row)
-        if noise(m):
-            continue
-        attachments = [{k: m[k] for k in ('media_type', 'filename', 'local_path') if m.get(k)}]
-        text = m['text'] or m['display_text'] or m.get('media_caption') or ''
-        result.append(dict(source='whatsapp', account=paths.wa_account, chat=chat, msg_id=m['msg_id'],
-                           sender_raw=m['sender_jid'], sender_name=m['sender_name'],
-                           is_owner=int(bool(m['from_me'])), ts=m['ts'], text=text, own_text=text,
-                           # wacli keeps the quoted message's ID, not its text.
-                           quoted_ids=json.dumps([m['quoted_msg_id']] if m.get('quoted_msg_id') else []),
-                           attachments_json=json.dumps([a for a in attachments if a]),
-                           edited=int(bool(m['edited'])), deleted=int(bool(m['revoked'] or m.get('deleted_for_me')))))
     return result
+
+
+def quotable(paths, chat, msg_id, to):
+    """Whether a send to `to` can quote this stored message: it is the same conversation (a 1:1 chat
+    may be stored under the person's LID and sent to their phone JID), and wacli has what it needs
+    to rebuild the quote. wacli refuses the whole send otherwise, so anything unsure is False."""
+    try:
+        if to != chat:
+            mapping = lid_map(paths)
+            if mapping.get(chat, chat) != mapping.get(to, to):
+                return False
+        db = readonly(paths.wa / 'wacli.db')
+        try:
+            row = db.execute('SELECT * FROM messages WHERE chat_jid=? AND msg_id=?', (chat, msg_id)).fetchone()
+        finally:
+            db.close()
+    except (OSError, sqlite3.Error):
+        return False
+    if not row:
+        return False
+    m = dict(row)
+    if (m.get('from_me') or m.get('revoked') or m.get('deleted_for_me') or m.get('reaction_to_id')
+            or (m.get('buttons') or '').strip() not in ('', '[]', 'null')):
+        return False
+    if m.get('media_type'):
+        return (m['media_type'].strip().lower() in QUOTE_MEDIA and
+                all(m.get(k) for k in ('mime_type', 'direct_path', 'media_key', 'file_sha256', 'file_enc_sha256', 'file_length')))
+    return bool((m.get('text') or '').strip())
 
 
 def owner_chat(paths, chats, since):

@@ -39,6 +39,8 @@ ACK_PER_SYNC = 4  # toucan-bot reaction calls per sync (a message's swap may fin
 ACK_TIMEOUT = 15  # seconds per toucan-bot call
 REPLIED = ('replied', 'owner replied', 'owner posted')  # close reasons that mean the person got an answer
 ANSWER_FOLLOWUP_SECONDS = 600  # an unquoted owner message this soon after a card's answer still adds to it
+# wacli's refusals to build a reply's quote; it checks the quote before sending, so nothing went out.
+QUOTE_REFUSED = re.compile(r'quoted|cannot quote|reply-to-sender', re.I)
 
 
 def still_image(path):
@@ -218,10 +220,13 @@ class App:
                 if a.get('media_type') == 'audio':
                     a['local_path'] = row['path']
             m['attachments_json'] = json.dumps(attachments)
-        m['text'] = ('Voice note, transcribed automatically:\n' + row['text'] if row['text'] else
-                     'Voice note; automatic transcription failed. Transcribe the attached file before answering '
-                     '(if no file is attached, download it with `wacli --read-only media download`).')
-        m['own_text'] = m['text']
+        # A voice note that replies to another message keeps the quoted message below the transcript.
+        own = m.get('own_text')
+        quote = m['text'][len(own):] if own is not None and m['text'].startswith(own) else ''
+        m['own_text'] = ('Voice note, transcribed automatically:\n' + row['text'] if row['text'] else
+                         'Voice note; automatic transcription failed. Transcribe the attached file before answering '
+                         '(if no file is attached, download it with `wacli --read-only media download`).')
+        m['text'] = m['own_text'] + quote
         return True
 
     def read_route(self, route, chat, since, tracked):
@@ -394,7 +399,10 @@ class App:
                         # None means the bot has no mention data and keeps the stored reading.
                         retagged = (m.get('mentions_json') is not None and
                                     json.loads(old['mentions_json'] or '[]') != json.loads(m['mentions_json']))
-                        changed = (retagged or any(old[k] != m[k] for k in ('text', 'edited', 'deleted')) or
+                        # A WhatsApp quote that only now resolves (or whose quoted message changed) is not an
+                        # edit of the request: compare what the sender wrote.
+                        said = 'own_text' if m['source'] == 'whatsapp' and old['own_text'] is not None else 'text'
+                        changed = (retagged or old[said] != m[said] or any(old[k] != m[k] for k in ('edited', 'deleted')) or
                                    attachment_content(old['attachments_json']) != attachment_content(m['attachments_json']))
                         ready = (sum(bool(a.get('local_path')) for a in json.loads(m['attachments_json'] or '[]')) >
                                  sum(bool(a.get('local_path')) for a in json.loads(old['attachments_json'] or '[]')))
@@ -1600,8 +1608,12 @@ class App:
                              f'reply pass to send it to {self.settings["owner_name"]} now.')
                     self.db.execute('UPDATE cards SET delegate_jid=?,delegate_name=?,wait_minutes=? WHERE id=?',
                                     (recipient, person['name'], wait, card_row))
+            # quote_replies: a WhatsApp reply quotes the request's message, only in the chat that message is in.
+            quote = (message['msg_id'] if kind == 'send' and not as_bot and route.get('quote_replies') and
+                     message['source'] == 'whatsapp' and row['reply_source'] == 'whatsapp' and
+                     sources.quotable(self.paths, message['chat'], message['msg_id'], recipient) else None)
             out = self._queue_delivery(req, row['thread'], kind, 'teams-bot' if as_bot else 'whatsapp', recipient, body, file,
-                                       override=override)
+                                       override=override, quote=quote)
             if card_row:
                 self.db.execute('UPDATE cards SET outbox_id=? WHERE id=?', (out, card_row))
         result = self._send_outbox(out, row['thread'], req, keep_open, promise, due)
@@ -1728,7 +1740,7 @@ class App:
             return f'@[{person["teams_id"]}]'
         return TAG.sub(swap, body) if body else body
 
-    def _queue_delivery(self, req, thread, kind, source, recipient, body, file, override=None, **detail):
+    def _queue_delivery(self, req, thread, kind, source, recipient, body, file, override=None, quote=None, **detail):
         if file and not Path(file).is_file():
             raise ValidationError('attachment file does not exist')
         raw = body
@@ -1763,7 +1775,7 @@ class App:
                 people = None  # the timeline falls back to reading the stored text
         out = insert(self.db, 'outbox', attempt_id=str(uuid.uuid4()), request_id=req, kind=kind,
                      source=source, to_chat=recipient, text=body, file=str(file) if file else None,
-                     state='pending', created_at=self.fx.now(), updated_at=self.fx.now())
+                     state='pending', created_at=self.fx.now(), updated_at=self.fx.now(), quote_id=quote)
         self.record('outbox_pending', thread, req, outbox=out, delivery_kind=kind,
                     **(dict(people=people) if people is not None else {}), **detail)
         for check in checks:
@@ -1787,8 +1799,14 @@ class App:
             argv = ['wacli', '--json', 'send', 'file' if file else 'text', '--to', recipient]
             argv += ['--file', str(file)] + (['--caption', body] if body else []) if file else ['--message', body]
             argv += ['--store', str(self.paths.wa)]
+        quoted = argv + ['--reply-to', row['quote_id']] if row['quote_id'] else argv
         try:
-            result = self.fx.run(argv)
+            result = self.fx.run(quoted)
+            if quoted is not argv and result.returncode and QUOTE_REFUSED.search(result.stderr or ''):
+                # wacli checks the quote before it sends anything, so this reply was not sent: send it unquoted.
+                with self.transaction():
+                    self.record('quote_dropped', thread, req, outbox=out, error=(result.stderr or '')[:500])
+                result = self.fx.run(argv)
         except Exception:
             # A timeout can happen after the recipient received the message.
             with self.transaction():
