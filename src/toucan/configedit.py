@@ -162,6 +162,14 @@ def edit(path, action, key, values=None, list_values=False):
     return dict(status=save(path, raw), key=key)
 
 
+def telemetry(path, answer):
+    """Record the operator's answer to the usage-data question: on or off."""
+    raw = read(path)
+    settings = raw.setdefault('settings', {})
+    settings.update(telemetry=answer == 'on', telemetry_asked=True)
+    return dict(status=save(path, raw), telemetry=answer)
+
+
 def add(path, kind, key, entry, replace=False, now=None):
     key_name(key)
     raw = read(path)

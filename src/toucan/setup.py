@@ -160,8 +160,14 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
     check('owner_name', 'configuration', bool(settings['owner_name'].strip()) and settings['owner_name'] != 'the owner', 'Set settings.owner_name' if settings['owner_name'] == 'the owner' else 'Owner name set', 'configuration')
     check('owner_whatsapp', 'configuration', bool(PHONE.fullmatch(settings['owner_whatsapp'])), 'Owner WhatsApp set' if PHONE.fullmatch(settings['owner_whatsapp']) else 'Set settings.owner_whatsapp', 'setup-whatsapp')
     add('timezone', 'configuration', 'ok', f'Timezone {settings["timezone"]}', 'configuration')
-    add('telemetry', 'configuration', 'ok', 'Anonymous usage events on; TOUCAN_TELEMETRY=0 turns them off'
-        if telemetry.enabled(settings) else 'Anonymous usage events off', 'telemetry')
+    if telemetry.pending(settings):
+        add('telemetry', 'configuration', 'todo', 'Ask the operator whether to share anonymous usage counts; '
+            'nothing is sent until they say yes. Put the question in "ask" to them and run the command of the '
+            'option they choose. Never answer it for them', 'telemetry')
+        items[-1]['ask'] = telemetry.ASK
+    else:
+        add('telemetry', 'configuration', 'ok', 'Anonymous usage events on, thank you; `toucan telemetry off` stops them'
+            if telemetry.enabled(settings) else 'Anonymous usage events off', 'telemetry')
     for key, thread in cfg['threads'].items():
         warning = hook_warning(thread)
         check(f'thread:{key}:hook', 't3', not warning, f'{key}: {warning or "hook file has mode 600"}', 'setup-t3')
@@ -333,7 +339,12 @@ def doctor(path=None, effects=None, paths=None, show_ids=False):
 
 def doctor_text(items):
     labels = [('ok', 'Configured'), ('todo', 'Left to do'), ('warn', 'Warnings'), ('skip', 'Optional / skipped')]
-    return '\n\n'.join(label + '\n' + '\n'.join(f'  {i["id"]}: {i["message"]}. {i["fix"]}' + (f'\n    {i["command"]}' if i['command'] else '') for i in items if i['status'] == status)
+    def line(i):
+        text = f'  {i["id"]}: {i["message"]}. {i["fix"]}' + (f'\n    {i["command"]}' if i['command'] else '')
+        if i.get('ask'):
+            text += f'\n    {i["ask"]["question"]}' + ''.join(f'\n    {o["label"]}: {o["command"]}' for o in i['ask']['options'])
+        return text
+    return '\n\n'.join(label + '\n' + '\n'.join(line(i) for i in items if i['status'] == status)
                         for status, label in labels if any(i['status'] == status for i in items))
 
 

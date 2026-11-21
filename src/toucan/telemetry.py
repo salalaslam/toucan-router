@@ -1,7 +1,9 @@
 """Anonymous usage events: at most one `router.active` event a day, so the project can count active installs.
 
-docs/telemetry.md lists every field. Only counts and fixed names are sent; message text, chat names,
-identities, thread ids and config values never are. A failed send never fails a command."""
+Nothing is sent until the operator says yes (`toucan telemetry on`). Until they answer, `toucan doctor`
+and the daily list ask them. docs/telemetry.md lists every field. Only counts and fixed names are sent;
+message text, chat names, identities, thread ids and config values never are. A failed send never fails
+a command."""
 import hashlib
 import json
 import os
@@ -20,17 +22,40 @@ DAY = 86400
 RETRY = 3600
 TIMEOUT = 3
 OFF = {'0', 'false', 'no', 'off'}
-NOTICE = ('toucan: sending one anonymous usage event a day (version and counts, never message content). '
-          'Turn it off with TOUCAN_TELEMETRY=0 or `toucan config set settings.telemetry false`. See docs/telemetry.md.')
+NOTICE = ('toucan: sending one anonymous usage event a day, as agreed (version and counts, never message content). '
+          '`toucan telemetry off` stops it. See docs/telemetry.md.')
+# Agents put this to the operator word for word (`toucan doctor` item `telemetry`, field `ask`). They used to
+# read "telemetry" as something to switch off on the operator's behalf, so the operator never saw the choice.
+QUESTION = ("Toucan Router is new, and its maintainers can't tell whether anyone uses it. May it send one anonymous "
+            'event a day so they can count active installs? The event holds the Toucan, Python and OS versions and '
+            'counts of routes, threads, people and requests. It never holds messages, names, phone numbers, IDs or '
+            'config values. The count decides whether the maintainers keep working on Toucan Router and what '
+            'they build next.')
+ASK = dict(header='Usage data', question=QUESTION, details='docs/telemetry.md (or `toucan guide telemetry`)',
+           options=[dict(label='Yes, share counts', command='toucan telemetry on',
+                         description='One anonymous event a day. `toucan telemetry off` stops it later.'),
+                    dict(label='No', command='toucan telemetry off', description='Nothing is sent.')])
+DIGEST_LINE = ("Toucan Router is new and its maintainers can't tell whether anyone uses it. May it send one anonymous "
+               'usage event a day (versions and counts, never messages or names)? Run `toucan telemetry on` or '
+               '`toucan telemetry off`. Either answer removes this line.')
+
+
+def _env_off(environ):
+    environ = os.environ if environ is None else environ
+    return (environ.get('TOUCAN_TELEMETRY', '').strip().lower() in OFF or
+            environ.get('DO_NOT_TRACK', '').strip().lower() not in ('', *OFF))
 
 
 def enabled(settings, environ=None):
-    environ = os.environ if environ is None else environ
-    if environ.get('TOUCAN_TELEMETRY', '').strip().lower() in OFF:
-        return False
-    if environ.get('DO_NOT_TRACK', '').strip().lower() not in ('', *OFF):
-        return False
-    return settings.get('telemetry', True) is not False and not POSTHOG_KEY.endswith('REPLACE_ME')
+    """On only after an explicit yes: `settings.telemetry = true`, which `toucan telemetry on` writes."""
+    return settings.get('telemetry') is True and not _env_off(environ) and not POSTHOG_KEY.endswith('REPLACE_ME')
+
+
+def pending(settings, environ=None):
+    """True while the operator has not answered. A `telemetry = false` written before Toucan asked (often by
+    an installing agent) does not count as an answer, so upgraded installs are asked once too."""
+    return (settings.get('telemetry') is not True and settings.get('telemetry_asked') is not True
+            and not _env_off(environ) and not POSTHOG_KEY.endswith('REPLACE_ME'))
 
 
 def state_file():

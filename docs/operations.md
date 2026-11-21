@@ -144,7 +144,8 @@ daily list. A different question is a new card.
 
 `toucan digest` (run it once a day from a timer) sends one message listing every card still
 waiting on you, with its options, and how many requests threads settled without you the day
-before. It sends nothing when nothing is waiting. `--dry-run` prints it.
+before. It sends nothing when nothing is waiting. `--dry-run` prints it. Until you answer the
+usage-data question ([telemetry](telemetry.md)), the list ends with one line asking it.
 
 `toucan retriage` hands every request escalated before cards existed back to its thread, which
 the inbox tells to settle it or escalate it again as a card. Those cards are held for the next

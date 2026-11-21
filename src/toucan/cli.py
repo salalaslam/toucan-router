@@ -70,6 +70,8 @@ def parser():
             sub.add_argument('--example', action='store_true')
             for flag in ('owner-name', 'timezone', 'owner-whatsapp', 'owner-teams-id'):
                 sub.add_argument('--' + flag)
+            sub.add_argument('--telemetry', choices=('on', 'off'),
+                             help="the operator's answer to the usage-data question (`toucan guide telemetry`); ask them")
         if name == 'upload':
             sub.add_argument('file')
             sub.add_argument('--title')
@@ -252,6 +254,11 @@ def parser():
         sub = hook.add_parser(action)
         options(sub)
         sub.add_argument('thread')
+    sub = commands.add_parser('telemetry', description=(
+        "Record the operator's answer to the usage-data question that `toucan doctor` asks. Ask them first; "
+        'never answer it for them. See `toucan guide telemetry`.'))
+    options(sub)
+    sub.add_argument('answer', choices=('on', 'off'))
     sub = commands.add_parser('setup-prompt')
     options(sub)
     sub.add_argument('thread')
@@ -505,14 +512,15 @@ def main(argv=None, *, effects=None, paths=None):
     try:
         if args.command == 'init':
             result = setup.init(args.config, args.force, example=args.example, owner_name=args.owner_name,
-                                timezone=args.timezone, owner_whatsapp=args.owner_whatsapp, owner_teams_id=args.owner_teams_id)
+                                timezone=args.timezone, owner_whatsapp=args.owner_whatsapp, owner_teams_id=args.owner_teams_id,
+                                telemetry=args.telemetry)
             print(json.dumps(result) if args.json else result['message'])
             return 0
         if args.command == 'doctor':
             items = setup.doctor(args.config, effects, paths, args.show_ids)
             print(json.dumps(items) if args.json else setup.doctor_text(items))
             return int(any(i['status'] in ('todo', 'warn') for i in items))
-        if args.command in ('add', 'remove', 'config', 'hook', 'discover', 'setup-prompt', 'enable', 'disable', 'guide'):
+        if args.command in ('add', 'remove', 'config', 'hook', 'discover', 'setup-prompt', 'enable', 'disable', 'guide', 'telemetry'):
             result = agent_command(args, effects or Effects(), paths)
             print(result if isinstance(result, str) and not args.json else json.dumps(result, indent=None if args.json else 2, ensure_ascii=False))
             if isinstance(result, dict) and result.get('status') == 'refused':
@@ -575,6 +583,8 @@ def agent_command(args, effects, paths):
         if args.action == 'get':
             result['value'] = agentsetup.safe(result['value'], args.json or args.show_ids, (args.key or '').split('.')[-1])
         return result
+    if c == 'telemetry':
+        return configedit.telemetry(path, args.answer)
     if c == 'remove':
         return configedit.remove(path, args.kind, args.key)
     if c == 'add':

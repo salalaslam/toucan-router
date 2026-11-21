@@ -93,7 +93,7 @@ Running it:
 
 - [Configuration: every key](docs/configuration.md)
 - [Operations: the request lifecycle, rotation, escalations, recovery](docs/operations.md)
-- [Telemetry: the one anonymous event a day, and how to turn it off](docs/telemetry.md)
+- [Telemetry: the one anonymous event a day, sent only if you say yes](docs/telemetry.md)
 - [Architecture: how the pieces fit](docs/architecture.md)
 
 `toucan guide` prints [AGENTS.md](AGENTS.md), the instructions agents follow.
@@ -117,8 +117,9 @@ numbers that use unofficial clients. The Loom uploader in `toucan-router-tools` 
 unofficial API and is marked experimental. Read [SECURITY.md](SECURITY.md) before routing chats
 from people you don't fully trust: their messages reach agents that can run commands.
 
-Toucan sends one anonymous usage event a day (version and counts, never chat content). Turn it
-off with `TOUCAN_TELEMETRY=0` or `toucan config set settings.telemetry false`; see
+Toucan Router is new, and its maintainers can't tell whether anyone uses it. `toucan doctor`
+asks whether Toucan may send one anonymous usage event a day (versions and counts, never chat
+content). Nothing is sent until you run `toucan telemetry on`; see
 [docs/telemetry.md](docs/telemetry.md).
 
 ## Contributing
