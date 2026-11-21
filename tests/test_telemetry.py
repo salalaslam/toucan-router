@@ -7,7 +7,7 @@ import pytest
 from toucan import telemetry
 from toucan.effects import Effects
 
-CFG = dict(settings={}, threads={'desk': {}, 'web': {}}, people={'ann': {}},
+CFG = dict(settings={'telemetry': True}, threads={'desk': {}, 'web': {}}, people={'ann': {}},
            routes=[dict(source='whatsapp', router='live'), dict(source='teams', router='shadow'), dict(source='teams')])
 
 
@@ -43,7 +43,7 @@ def report(fake, environ=None, cfg=CFG, stderr=None):
 def test_sends_counts_only_and_once_a_day(fake, capsys):
     clock, db, fx, path = fake
     assert report(fake) == 'sent'
-    assert 'TOUCAN_TELEMETRY=0' in capsys.readouterr().err
+    assert '`toucan telemetry off`' in capsys.readouterr().err
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     body = clock.sent[0]['body']
     assert clock.sent[0]['timeout'] == telemetry.TIMEOUT
@@ -76,14 +76,20 @@ def test_failure_waits_an_hour_and_never_raises(fake):
     assert report(fake) == 'sent'
 
 
-@pytest.mark.parametrize('environ, settings', [
-    ({'TOUCAN_TELEMETRY': '0'}, {}), ({'TOUCAN_TELEMETRY': 'off'}, {}), ({'DO_NOT_TRACK': '1'}, {}),
-    ({}, {'telemetry': False}),
+@pytest.mark.parametrize('environ, settings, asks', [
+    # Nothing is sent before the operator answers, and Toucan keeps asking until they do.
+    ({}, {}, True),
+    # A `false` written before Toucan asked (often by the installing agent) is not the operator's answer.
+    ({}, {'telemetry': False}, True),
+    ({}, {'telemetry': False, 'telemetry_asked': True}, False),
+    ({'TOUCAN_TELEMETRY': '0'}, {'telemetry': True}, False), ({'TOUCAN_TELEMETRY': 'off'}, {'telemetry': True}, False),
+    ({'DO_NOT_TRACK': '1'}, {'telemetry': True}, False),
 ])
-def test_opt_outs_send_nothing_and_write_nothing(fake, environ, settings):
+def test_sends_only_after_a_yes_and_asks_until_answered(fake, environ, settings, asks):
     clock, _, _, path = fake
     assert report(fake, environ, CFG | {'settings': settings}) == 'off'
     assert clock.sent == [] and not path.exists()
+    assert telemetry.pending(settings, environ) is asks
 
 
 def test_do_not_track_zero_keeps_it_on(fake):
@@ -108,15 +114,29 @@ def test_cli_sends_after_real_runs_only_and_honours_the_setting(request, monkeyp
     w.fx.post = lambda url, data, headers, timeout=20: sent.append(json.loads(data)) or 200
     run = lambda *argv: main(list(argv), effects=w.fx, paths=w.paths)
 
+    # An upgraded install whose agent switched it off before Toucan asked: doctor asks the operator again.
+    assert run('config', 'set', 'settings.telemetry', 'false', '--json') == 0
+    run('status', '--json')
+    assert sent == []
+    capsys.readouterr()
+    run('doctor', '--json')
+    item = next(i for i in json.loads(capsys.readouterr().out) if i['id'] == 'telemetry')
+    assert item['status'] == 'todo'
+    assert [o['command'] for o in item['ask']['options']] == ['toucan telemetry on', 'toucan telemetry off']
+
+    assert run('telemetry', 'on', '--json') == 0
+    capsys.readouterr()
+    run('doctor', '--json')
+    assert next(i for i in json.loads(capsys.readouterr().out) if i['id'] == 'telemetry')['status'] == 'ok'
     run('sync', '--dry-run', '--json')
     assert sent == [] and not (w.db_path.parent / 'telemetry.json').exists()
     run('status', '--json')
     assert [s['event'] for s in sent] == ['router.active']
-    assert 'TOUCAN_TELEMETRY=0' in capsys.readouterr().err
+    assert '`toucan telemetry off`' in capsys.readouterr().err
     run('status', '--json')
     assert len(sent) == 1
 
-    assert run('config', 'set', 'settings.telemetry', 'false', '--json') == 0
+    assert run('telemetry', 'off', '--json') == 0
     assert load(w.config_path)['settings']['telemetry'] is False
     (w.db_path.parent / 'telemetry.json').unlink()
     run('status', '--json')
@@ -124,3 +144,9 @@ def test_cli_sends_after_real_runs_only_and_honours_the_setting(request, monkeyp
     w.config_path.write_text(w.config_path.read_text().replace('telemetry = false', 'telemetry = "no"'))
     with pytest.raises(ValidationError, match='telemetry must be true or false'):
         load(w.config_path)
+
+
+def test_docs_quote_the_question_agents_ask():
+    # docs/telemetry.md promises the operator the exact wording; a reworded QUESTION must update it too.
+    from pathlib import Path
+    assert telemetry.QUESTION in Path(__file__).parents[1].joinpath('docs/telemetry.md').read_text()

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import cards, donegate, ledger, router, sources, t3
+from . import cards, donegate, ledger, router, sources, t3, telemetry
 from .config import GROUP, PHONE, Refused, ValidationError, hook_warning, prefixed, reply_phone, timestamp
 from .effects import Effects, local_run
 from .storage import account_warning, event, insert, private_dir
@@ -1865,6 +1865,9 @@ class App:
                 f'\n\n{handled} handled without you yesterday.\nReply "{first} A" or "more {first}".')
         if merged:
             text += '\nNot listed, PR already merged: ' + ', '.join(f'{k} ({", ".join(v)})' for k, v in merged.items()) + '.'
+        if telemetry.pending(self.settings):
+            # Upgraded installs may never run `toucan doctor`; this is where their owner hears the question.
+            text += '\n\n' + telemetry.DIGEST_LINE
         report['text'] = text
         if self.dry:
             return report
