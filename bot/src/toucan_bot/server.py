@@ -27,6 +27,16 @@ log = logging.getLogger("toucan_bot")
 
 GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 PING = {"ping", "hi", "hello"}
+# Backstop for any await a per-call limit misses (catchup.TOKEN_TIMEOUT, ROSTER_TIMEOUT, the
+# 30-second HTTP client). A hung iteration fails with TimeoutError and retries with backoff.
+# Sweeps never need this long: catch-up paces Graph pages one second apart, waits at most 30
+# seconds for Retry-After before deferring the chat to a later pass, and gives up on a page
+# after four attempts, so a seven-day first read of a busy chat (thousands of messages at 50
+# a page) takes minutes. Image jobs and roster fetches are bounded per item the same way.
+# Every page, image and roster commits on its own, so even a cut-off sweep resumes where it
+# stopped and loses nothing.
+TASK_LIMIT = 3600  # seconds per iteration of each background task
+SEND_TIMEOUT = 60  # seconds for the bot's own reply to a ping
 
 
 async def verify_credentials(client_id: str, client_secret: str) -> str | None:
@@ -168,7 +178,8 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
         delay = 1
         while True:
             try:
-                await work()
+                async with asyncio.timeout(TASK_LIMIT):
+                    await work()
                 state.update(last_success=store.now(), last_error=None)
                 with con:
                     con.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('task:' + name, json.dumps(state)))
@@ -197,15 +208,16 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
     async def lifespan(web):
         async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
             async def retry_images(source):
-                token = (await app.token_provider.get_app_token('https://graph.microsoft.com/.default', settings['tenant_id'])
-                         if source == 'graph' else await app.token_provider.get_app_token())
+                token = (await catchup.app_token(app, 'https://graph.microsoft.com/.default', settings['tenant_id'])
+                         if source == 'graph' else await catchup.app_token(app))
                 if token is None:
                     raise ValueError('Image token unavailable')
                 await media.retry_pending(con, client, str(token), settings, source=source)
             async def refresh_rosters():
                 failed = False
+                removed = store.removed(con)
                 for chat in store.conversations(con):
-                    if await catchup.roster(con, app, chat) is False:
+                    if chat['id'] not in removed and await catchup.roster(con, app, chat) is False:
                         failed = True
                 if failed:
                     raise RuntimeError('Roster refresh failed; see per-chat roster errors')
@@ -247,7 +259,7 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
     async def images(a):
         if creds:
             try:
-                token = await app.token_provider.get_app_token()
+                token = await catchup.app_token(app)
                 if token is None:
                     raise ValueError('Connector token unavailable')
                 async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
@@ -268,6 +280,7 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
         if not allowed(a):
             return
         _remember_conversation(con, a)
+        store.clear_removed(con, a.conversation.id)  # a pushed message means the app is back
         # Persist before downloading so an interrupted download cannot lose the message.
         new = _store_message(con, a)
         if not a.is_recipient_mentioned():
@@ -276,7 +289,11 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
         await images(a)
         text = store.plain_text(a.text or '')
         if new and getattr(a.conversation, "conversation_type", None) == "personal" and text.lower() in PING:
-            await ctx.send(f"{settings['app_name']} is connected.")
+            try:
+                async with asyncio.timeout(SEND_TIMEOUT):  # the SDK's Connector client has no timeout
+                    await ctx.send(f"{settings['app_name']} is connected.")
+            except TimeoutError:
+                log.warning('ping reply timed out')
 
     @app.on_message_update
     async def on_message_update(ctx):
@@ -296,12 +313,18 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
 
     @app.on_installation_update
     async def on_installation_update(ctx):
-        # One handler for installs and upgrades: the SDK runs only the first matching handler
-        # unless it calls ctx.next(), and on_install_add never sees an upgrade. Either may bring
-        # new consent, so end any catch-up backoff; a removal does not.
+        # One handler for installs, upgrades and removals: the SDK runs only the first matching
+        # handler unless it calls ctx.next(), and on_install_add never sees an upgrade. An install
+        # or upgrade may bring new consent, so end any catch-up backoff. A removal makes every
+        # Graph and Connector call for the chat fail, so background work skips it until then.
         a = ctx.activity
-        if allowed(a) and getattr(a, 'action', None) != 'remove':
+        if not allowed(a):
+            return
+        if getattr(a, 'action', None) == 'remove':
+            store.mark_removed(con, a.conversation.id)
+        else:
             _remember_conversation(con, a)
+            store.clear_removed(con, a.conversation.id)
             with suppress(sqlite3.Error):
                 catchup.retry_now(con, a.conversation.id)
             if creds:
@@ -319,7 +342,12 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
         a = ctx.activity
         if allowed(a):
             _remember_conversation(con, a)
-            if creds:
+            bot = getattr(a.recipient, 'id', None)
+            if any(m.id == bot for m in getattr(a, 'members_added', None) or []):
+                store.clear_removed(con, a.conversation.id)
+            if any(m.id == bot for m in getattr(a, 'members_removed', None) or []):
+                store.mark_removed(con, a.conversation.id)
+            elif creds:
                 await catchup.roster(con, app, store.get_conversation(con, a.conversation.id))
 
     def check_token(given: str) -> bool:

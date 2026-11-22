@@ -786,6 +786,10 @@ def test_routed_teams_catchup_failures_alert_once_per_route_until_recovery(world
     assert 'teams:catchup:group' not in world.app.sync()['problems']
     world.advance(61)
     assert 'last succeeded 6 min ago (HTTP 500)' in world.app.sync()['problems']['teams:catchup:group']
+    # The bot stops catching up a chat the app was removed from; say that, not that it is stale.
+    with sqlite3.connect(world.paths.bot_db) as con:
+        con.execute("INSERT INTO meta VALUES ('removed:group:chat','2026-10-01T00:00:00+00:00')")
+    assert 'Toucan app was removed from this Teams chat' in world.app.sync()['problems']['teams:catchup:group']
 
 
 def test_never_synced_routed_chat_alerts_after_bounded_grace_or_a_catchup_pass(world):

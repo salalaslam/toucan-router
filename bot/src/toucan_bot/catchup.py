@@ -17,6 +17,17 @@ log = logging.getLogger('toucan_bot')
 
 GRAPH = 'https://graph.microsoft.com/v1.0'
 BACKOFF_CAP = 900  # seconds; longest wait after a 401/403 in one chat
+# The SDK's token provider runs MSAL in a worker thread, and the SDK builds MSAL without an HTTP
+# timeout, so a token request on a dead connection never returns. Bound every awaited token.
+# asyncio.timeout, not wait_for: on Python 3.11 wait_for can swallow a cancel that arrives as
+# the call finishes, and the bot then never shuts down. A timed-out thread is left to finish
+# on its own; the loop goes on.
+TOKEN_TIMEOUT = 60  # seconds
+
+
+async def app_token(app, *args):
+    async with asyncio.timeout(TOKEN_TIMEOUT):
+        return await app.token_provider.get_app_token(*args)
 
 
 def message_base(chat, message):
@@ -115,11 +126,12 @@ async def sync_chat(con, client, token, chat, settings, bot_id):
 
 
 async def sync(con, client, app, settings):
-    chats = [r for r in store.conversations(con) if r['type'] != 'personal']
+    removed = store.removed(con)
+    chats = [r for r in store.conversations(con) if r['type'] != 'personal' and r['id'] not in removed]
     if not chats:
         return
     try:
-        token = await app.token_provider.get_app_token('https://graph.microsoft.com/.default', settings['tenant_id'])
+        token = await app_token(app, 'https://graph.microsoft.com/.default', settings['tenant_id'])
         if token is None:
             raise ValueError('Graph token unavailable')
     except Exception as error:
@@ -164,8 +176,7 @@ async def roster(con, app, chat):
     try:
         # Chat rosters are not paginated. This is the Bot Connector, not Graph. The SDK's
         # HTTP client has no timeout, so one unanswered request would stall every sweep.
-        # asyncio.timeout, not wait_for: on Python 3.11 wait_for can swallow a cancel that
-        # arrives as the fetch finishes, and the bot then never shuts down.
+        # asyncio.timeout, not wait_for; see TOKEN_TIMEOUT.
         async with asyncio.timeout(ROSTER_TIMEOUT):
             members = await app.api.from_service_url(chat['service_url']).conversations.members(chat['id']).get_all()
         with con:

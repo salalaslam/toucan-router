@@ -208,7 +208,11 @@ scripts/check-private  release gate against a private denylist
   with its own connection; enumerate outside the writer lock and revalidate in batches of at
   most 32 files or messages. Join the worker on shutdown and preserve publication fencing.
   Supervise expiry, catch-up, live-media retries and roster refresh independently; a persistent
-  failure in one must not stop the others. Describe the initial Graph window as modification
+  failure in one must not stop the others. The SDK's token and Connector calls have no HTTP
+  timeout: bound each with `asyncio.timeout`, and keep the supervisor's per-iteration limit
+  as the backstop. A chat the app was removed from (meta `removed:<chat>`) is skipped by
+  catch-up, rosters and image retries and keeps its data; install, upgrade, the bot rejoining
+  or a pushed message clears it. Describe the initial Graph window as modification
   time, including older messages edited recently, in setup and privacy disclosures.
   Tests must mock Microsoft and make no network calls.
   Queue Connector and Graph image work in the message transaction. Keep Graph image retries

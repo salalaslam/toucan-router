@@ -170,6 +170,24 @@ Heartbeat, expiry, catch-up, Connector and Graph image retries, and roster refre
 recover from SQLite contention and other failures
 with cancellation-aware backoff. Check the status `background` object and doctor's
 `teams.background` item as well as catch-up and live-delivery health.
+The Teams SDK's token requests and Connector calls have no HTTP timeout of their own, so the
+bot limits each one: 60 seconds for a token, a roster fetch or a reply. A request that never
+answers then counts as a `TimeoutError` failure (on the chat for catch-up, on the task for
+image retries) and is retried on the next pass. As a backstop, one iteration of any
+background task may run for at most an hour; past that it is stopped, rolled back, recorded
+as `TimeoutError` in the task's `last_error`, and retried with the usual backoff. Pages,
+images and rosters are saved one at a time, so a stopped iteration resumes where it was.
+
+### When the app is removed from a chat
+
+When someone removes the app from a chat, Teams sends an installation update or a
+conversation update that removes the bot. The bot records the removal and stops catch-up,
+roster refresh and image retries for that chat, because Graph and the Connector refuse them
+(HTTP 403 or 404) from then on. It keeps the chat's messages, history and queued images.
+`toucan-bot status` shows the chat with a `removed` time, and it is no longer counted as
+stale or failing. Adding the app back, an upgrade, the bot being added to the chat again, or
+any new message pushed from the chat clears the mark, and catch-up resumes from its cursor.
+If a route uses the chat, `toucan doctor` and `toucan sync` say the app was removed.
 
 Images have a 10 MiB cap by default and live under the bot state directory's `media/`
 subdirectory, mode 700 with mode-600 files. The bot removes images after 30 days by default

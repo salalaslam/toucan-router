@@ -233,6 +233,30 @@ def invalidate_roster(con, chat):
         return con.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()[0]
 
 
+# The app was removed from a chat (meta "removed:<chat>" = when). The chat and its messages
+# stay; catch-up, roster refresh and image retries skip it until the app is back.
+REMOVED = 'removed:'
+
+
+def mark_removed(con, chat) -> None:
+    """Record a removal and withdraw the roster, discarding any refresh still in flight."""
+    with con:
+        con.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (REMOVED + chat, now()))
+        con.execute('INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1',
+                    ('roster_generation:' + chat, '1'))
+        con.execute('DELETE FROM meta WHERE key IN (?,?)', ('roster:' + chat, 'roster_error:' + chat))
+
+
+def clear_removed(con, chat) -> None:
+    with con:
+        con.execute('DELETE FROM meta WHERE key=?', (REMOVED + chat,))
+
+
+def removed(con) -> dict:
+    return {r['key'].removeprefix(REMOVED): r['value']
+            for r in con.execute('SELECT key,value FROM meta WHERE key LIKE ?', (REMOVED + '%',))}
+
+
 def remember_member(con, conversation_id, member) -> None:
     con.execute("""INSERT INTO members VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id,id)
                    DO UPDATE SET aad_id=COALESCE(excluded.aad_id,aad_id), name=COALESCE(excluded.name,name)""",
@@ -417,10 +441,13 @@ def coverage(con, at=None):
                             AND julianday(graph_seen_at)<=julianday(?, 'unixepoch','-5 minutes')""", (at, at)).fetchone()
     interval = con.execute("SELECT value FROM meta WHERE key='catchup_interval_seconds'").fetchone()
     seconds = int(interval[0]) if interval else 120
+    gone = removed(con)
     for chat in chats:
         age = chat['last_success_age_seconds']
-        chat['stale'] = age is None or age < -60 or age > max(300, seconds * 3)
-    failed = sum(bool(c['last_error'] or c['stale']) for c in chats)
+        # Catch-up skips a chat the app was removed from, so it is neither stale nor failing.
+        chat['removed'] = gone.get(chat['id'])
+        chat['stale'] = not chat['removed'] and (age is None or age < -60 or age > max(300, seconds * 3))
+    failed = sum(bool(not c['removed'] and (c['last_error'] or c['stale'])) for c in chats)
     roster_errors = {r['key'].removeprefix('roster_error:'): r['value']
                      for r in con.execute("SELECT key,value FROM meta WHERE key LIKE 'roster_error:%'")}
     return dict(catchup=dict(interval_seconds=seconds, chats=chats, failing_chats=failed, ok=not failed),

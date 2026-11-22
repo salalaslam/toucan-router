@@ -898,3 +898,163 @@ def test_roster_failure_reports_status_retries_and_finishes_other_chats(bot, mon
             assert report['roster'] == dict(errors={}, ok=True)
             assert not report['background']['tasks']['roster']['last_error']
     asyncio.run(run())
+
+
+def tasks_in(path):
+    with sqlite3.connect(path) as con:
+        return {key.removeprefix('task:'): json.loads(value)
+                for key, value in con.execute("SELECT key,value FROM meta WHERE key LIKE 'task:%'")}
+
+
+def test_unanswered_token_request_times_out_and_the_tasks_run_again(bot, monkeypatch):
+    import httpx
+    from toucan_bot import catchup
+    receive, _ = bot
+    asyncio.run(receive())
+    app, web = server.build(config.Credentials(ALICE, 'test-secret', tenant_id=TENANT))
+    client, sleep = httpx.AsyncClient, asyncio.sleep
+    answering = asyncio.Event()
+    async def token(*args):
+        await answering.wait()  # the SDK's MSAL request with no HTTP timeout
+        return 'test-token'
+    async def members():
+        return []
+    monkeypatch.setattr(catchup, 'TOKEN_TIMEOUT', .05)
+    monkeypatch.setattr(app.token_provider, 'get_app_token', token)
+    monkeypatch.setattr(app.api, 'from_service_url', lambda url: SimpleNamespace(conversations=SimpleNamespace(
+        members=lambda chat: SimpleNamespace(get_all=members))))
+    monkeypatch.setattr(server.httpx, 'AsyncClient', lambda **kw: client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={'value': []})), **kw))
+    def chat_error():
+        with sqlite3.connect(config.db_path()) as con:
+            return con.execute("SELECT last_success,last_error FROM catchup WHERE conversation_id='chat'").fetchone()
+    async def run():
+        async def pause(seconds):
+            await sleep(.005)
+        monkeypatch.setattr(server.asyncio, 'sleep', pause)
+        async with web.router.lifespan_context(web):
+            await wait_until(lambda: (chat_error() or (0, 0))[1] == 'TimeoutError' and all(
+                tasks_in(config.db_path()).get(name, {}).get('last_error') == 'TimeoutError' for name in ('media', 'graph_media')))
+            answering.set()
+            await wait_until(lambda: chat_error()[1] is None and chat_error()[0] and all(
+                (t := tasks_in(config.db_path()).get(name, {})).get('last_success') and not t['last_error'] and t['failures'] >= 1
+                for name in ('media', 'graph_media')))
+    asyncio.run(run())
+
+
+def test_hung_iteration_hits_the_task_limit_releases_its_claim_and_shutdown_finishes(bot, monkeypatch):
+    import httpx
+    from toucan_bot import catchup
+    receive, _ = bot
+    image = 'https://smba.trafficmanager.net/v3/attachments/image/views/original'
+    asyncio.run(receive(attachments=[dict(contentType='image/png', contentUrl=image)]))
+    app, web = server.build(config.Credentials(ALICE, 'test-secret', tenant_id=TENANT))
+    client, sleep = httpx.AsyncClient, asyncio.sleep
+    downloads = []
+    async def token(*args):
+        return 'test-token'
+    async def roster(*args):
+        pass
+    async def respond(request):
+        if str(request.url) == image:
+            downloads.append(request)
+            await asyncio.Event().wait()  # an answer that never comes, past every per-call limit
+        return httpx.Response(200, json={'value': []})
+    monkeypatch.setattr(server, 'TASK_LIMIT', .2)
+    monkeypatch.setattr(app.token_provider, 'get_app_token', token)
+    monkeypatch.setattr(catchup, 'roster', roster)
+    monkeypatch.setattr(server.httpx, 'AsyncClient', lambda **kw: client(transport=httpx.MockTransport(respond), **kw))
+    def job():
+        with sqlite3.connect(config.db_path()) as con:
+            return con.execute('SELECT claim_id,attempts FROM pending_media').fetchone()
+    async def run():
+        retry = asyncio.Event()
+        async def pause(seconds):
+            if seconds == 1:  # the supervisor's first backoff
+                await retry.wait()
+            elif seconds >= 60:
+                await asyncio.Event().wait()
+            await sleep(0)
+        monkeypatch.setattr(server.asyncio, 'sleep', pause)
+        context = web.router.lifespan_context(web)
+        await context.__aenter__()
+        try:
+            await wait_until(lambda: tasks_in(config.db_path()).get('media', {}).get('last_error') == 'TimeoutError')
+            task = tasks_in(config.db_path())['media']
+            assert task['failures'] == 1 and task['last_failure']
+            assert job() == (None, 0)  # released and still queued
+            retry.set()
+            await wait_until(lambda: len(downloads) == 2 and job()[0] is not None)
+        finally:
+            async with asyncio.timeout(2):  # shutdown cancels the hung iteration
+                await context.__aexit__(None, None, None)
+        assert job() == (None, 0)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('removal,comeback', [('uninstall', 'install'), ('bot removed', 'message'),
+                                              ('uninstall', 'bot added')])
+def test_chat_the_app_was_removed_from_is_skipped_until_it_comes_back(bot, monkeypatch, capsys, removal, comeback):
+    import httpx
+    from toucan_bot import cli
+    receive, _ = bot
+    image = 'https://smba.trafficmanager.net/v3/attachments/image/views/original'
+    asyncio.run(receive(attachments=[dict(contentType='image/png', contentUrl=image)]))
+    asyncio.run(receive(id='m2', conversation=dict(id='other', tenantId=TENANT, conversationType='groupChat')))
+    with store.connect(config.db_path()) as con:
+        store.catchup_result(con, 'chat', error='HTTP 403', status=403)
+        con.execute("INSERT INTO meta VALUES ('roster_error:chat','HTTP 403')")
+        con.commit()
+    if removal == 'uninstall':
+        asyncio.run(receive(UninstalledActivity, type='installationUpdate', action='remove', text=None))
+    else:
+        asyncio.run(receive(ConversationUpdateActivity, type='conversationUpdate', text=None,
+                            membersRemoved=[dict(id='bot', name='Toucan')]))
+    app, web = server.build(config.Credentials(ALICE, 'test-secret', tenant_id=TENANT))
+    client, sleep = httpx.AsyncClient, asyncio.sleep
+    requests, rosters = [], []
+    async def token(*args):
+        return 'test-token'
+    def members(chat):
+        async def get_all():
+            rosters.append(chat)
+            return []
+        return SimpleNamespace(get_all=get_all)
+    def respond(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, json={'value': []})
+    monkeypatch.setattr(app.token_provider, 'get_app_token', token)
+    monkeypatch.setattr(app.api, 'from_service_url', lambda url: SimpleNamespace(conversations=SimpleNamespace(members=members)))
+    monkeypatch.setattr(server.httpx, 'AsyncClient', lambda **kw: client(transport=httpx.MockTransport(respond), **kw))
+    def swept():
+        tasks = tasks_in(config.db_path())
+        return all(tasks.get(n, {}).get('last_success') for n in ('catchup', 'media', 'roster'))
+    async def run():
+        async def pause(seconds):
+            if seconds >= 60:
+                await asyncio.Event().wait()
+            await sleep(0)
+        monkeypatch.setattr(server.asyncio, 'sleep', pause)
+        async with web.router.lifespan_context(web):
+            await wait_until(swept)
+    asyncio.run(run())
+    assert rosters == ['other'] and image not in requests
+    assert [u for u in requests if '/chats/' in u] and not [u for u in requests if '/chats/chat/' in u]
+    cli.main(['status', '--json'])
+    report = json.loads(capsys.readouterr().out)
+    chats = {c['id']: c for c in report['catchup']['chats']}
+    assert chats['chat']['removed'] and not chats['chat']['stale'] and not chats['other']['removed']
+    assert report['catchup']['ok'] and report['roster'] == dict(errors={}, ok=True)
+    with sqlite3.connect(config.db_path()) as con:  # history and queued work are kept
+        assert con.execute("SELECT count(*) FROM messages WHERE conversation_id='chat'").fetchone()[0] == 1
+        assert con.execute("SELECT count(*) FROM pending_media WHERE conversation_id='chat'").fetchone()[0] == 1
+    if comeback == 'install':
+        asyncio.run(receive(InstalledActivity, type='installationUpdate', action='add', text=None))
+    elif comeback == 'message':
+        asyncio.run(receive(id='m3'))
+    else:
+        asyncio.run(receive(ConversationUpdateActivity, type='conversationUpdate', text=None,
+                            membersAdded=[dict(id='bot', name='Toucan')]))
+    with sqlite3.connect(config.db_path()) as con:
+        con.row_factory = sqlite3.Row
+        assert store.removed(con) == {}

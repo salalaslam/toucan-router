@@ -242,8 +242,10 @@ async def renew_token(client, settings, source):
 
 
 async def retry_pending(con, client, token, settings, *, source, chat=None):
+    # Jobs for a chat the app was removed from stay queued until it is back (store.REMOVED).
     jobs = con.execute('SELECT conversation_id,message_id,source,url FROM pending_media '
-                       'WHERE source=? AND next_attempt<=? AND (? IS NULL OR conversation_id=?)',
+                       'WHERE source=? AND next_attempt<=? AND (? IS NULL OR conversation_id=?) '
+                       "AND 'removed:' || conversation_id NOT IN (SELECT key FROM meta)",
                        (source, time.time(), chat, chat)).fetchall()
     renewed_token, renewal_error = None, None
     for candidate in jobs:
