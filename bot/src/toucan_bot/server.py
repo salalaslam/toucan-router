@@ -215,9 +215,8 @@ def build(creds: config.Credentials | None = None, *, port: int | None = None) -
                 await media.retry_pending(con, client, str(token), settings, source=source)
             async def refresh_rosters():
                 failed = False
-                removed = store.removed(con)
                 for chat in store.conversations(con):
-                    if chat['id'] not in removed and await catchup.roster(con, app, chat) is False:
+                    if await catchup.roster(con, app, chat) is False:
                         failed = True
                 if failed:
                     raise RuntimeError('Roster refresh failed; see per-chat roster errors')

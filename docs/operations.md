@@ -572,6 +572,7 @@ when an ordinary message is pushed in the chat. A chat that has never synced is 
 ended after the bot first saw it, or at the latest three intervals (at least five minutes)
 after the later of bot start and first sight, with the catch-up task's error if it keeps
 failing. A restart therefore raises no false alert, and a failing catch-up still shows.
+A routed chat the app was removed from raises its own alert, `teams:removed:ROUTE`.
 Conversations no route uses never raise router alerts. Missing ordinary push delivery warns that Toucan depends on catch-up
 latency. Zero observed gaps does not prove delivery, and a fresh heartbeat proves only that
 the process is running. Inspect these items separately from `teams.fresh`.

@@ -239,9 +239,11 @@ REMOVED = 'removed:'
 
 
 def mark_removed(con, chat) -> None:
-    """Record a removal and withdraw the roster, discarding any refresh still in flight."""
+    """Record a removal and withdraw the roster. Roster and image work still in flight is
+    discarded when it returns, so a refusal after removal cannot mark an image unavailable."""
     with con:
         con.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (REMOVED + chat, now()))
+        con.execute('UPDATE pending_media SET claim_id=NULL,claim_until=NULL WHERE conversation_id=?', (chat,))
         con.execute('INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1',
                     ('roster_generation:' + chat, '1'))
         con.execute('DELETE FROM meta WHERE key IN (?,?)', ('roster:' + chat, 'roster_error:' + chat))

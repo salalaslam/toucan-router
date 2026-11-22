@@ -171,6 +171,8 @@ ROSTER_TIMEOUT = 60  # seconds for one chat's member list
 
 
 async def roster(con, app, chat):
+    if chat['id'] in store.removed(con):
+        return  # the Connector refuses it; removal also discards a fetch already in flight
     generation = store.invalidate_roster(con, chat['id'])
     key = 'roster_generation:' + chat['id']
     try:

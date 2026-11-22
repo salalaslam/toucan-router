@@ -241,6 +241,12 @@ async def renew_token(client, settings, source):
     return token
 
 
+# HTTPX's read timeout restarts with every chunk, so a trickling response never trips it.
+# Stop one transfer inside the five-minute claim lease: no second worker can start the same
+# job, and one slow image cannot hold back the rest of the queue.
+DOWNLOAD_TIMEOUT = 240  # seconds
+
+
 async def retry_pending(con, client, token, settings, *, source, chat=None):
     # Jobs for a chat the app was removed from stay queued until it is back (store.REMOVED).
     jobs = con.execute('SELECT conversation_id,message_id,source,url FROM pending_media '
@@ -256,7 +262,8 @@ async def retry_pending(con, client, token, settings, *, source, chat=None):
                 con.execute('BEGIN IMMEDIATE')
             claimed = con.execute('UPDATE pending_media SET claim_id=?,claim_until=? '
                                   'WHERE conversation_id=? AND message_id=? AND source=? AND url=? '
-                                  'AND next_attempt<=? AND (claim_id IS NULL OR claim_until<=?)',
+                                  'AND next_attempt<=? AND (claim_id IS NULL OR claim_until<=?) '
+                                  "AND 'removed:' || conversation_id NOT IN (SELECT key FROM meta)",
                                   (claim, time.time() + 300, *where, time.time(), time.time())).rowcount
             if not claimed:
                 continue
@@ -282,8 +289,13 @@ async def retry_pending(con, client, token, settings, *, source, chat=None):
                 result = attachment | dict(download_status='pending', download_error=type(renewal_error).__name__,
                                            retry_at=time.time() + retry_delay(getattr(renewal_error, 'response', None), job['attempts']))
             else:
-                result = await download(client, attachment, renewed_token or token, settings, source=source,
-                                        key=job['conversation_id'] + '/' + job['message_id'], defer_publish=True)
+                try:
+                    async with asyncio.timeout(DOWNLOAD_TIMEOUT):
+                        result = await download(client, attachment, renewed_token or token, settings, source=source,
+                                                key=job['conversation_id'] + '/' + job['message_id'], defer_publish=True)
+                except TimeoutError:
+                    result = attachment | dict(download_status='pending', download_error='TimeoutError',
+                                               retry_at=time.time() + retry_delay(attempts=job['attempts']))
             staged = result.pop('_staged_path', None)
             with con:
                 if not con.in_transaction:

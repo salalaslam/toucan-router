@@ -1048,3 +1048,45 @@ def test_missing_conversation_invalidates_alias_without_failing_sweep(state, cap
         assert asyncio.run(catchup.roster(con, app, store.get_conversation(con, 'gone'))) is not False
     assert not con.execute("SELECT 1 FROM meta WHERE key IN ('roster:gone','roster_error:gone')").fetchall()
     assert 'conversation=gone HTTP 404: conversation not found' in caplog.text
+
+
+def test_endless_image_transfer_is_retried_later_and_the_rest_of_the_queue_runs(state, monkeypatch):
+    con, settings = state
+    images = [catchup.message_base('chat', m) + '/hostedContents/image/$value' for m in ('m1', 'm2')]
+    for id, image in zip(('m1', 'm2'), images):
+        store.record_message(con, conversation_id='chat', **catchup.normalise(message(id, attachments=[
+            dict(contentType='image/png', contentUrl=image)]), 'bot'))
+    monkeypatch.setattr(media, 'DOWNLOAD_TIMEOUT', .05)
+    async def respond(request):
+        if '/m1/' in request.url.path:
+            await asyncio.Event().wait()  # bytes that keep trickling past the read timeout
+        return httpx.Response(200, content=b'image', headers={'Content-Type': 'image/png'})
+    async def run():
+        async with asyncio.timeout(2), httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            await media.retry_pending(con, client, 'token', settings, source='graph')
+    asyncio.run(run())
+    items = {r['id']: json.loads(r['attachments_json'])[0] for r in con.execute('SELECT id,attachments_json FROM messages')}
+    assert items['m2']['download_status'] == 'available'
+    assert items['m1']['download_status'] == 'pending' and items['m1']['download_error'] == 'TimeoutError'
+    job = con.execute('SELECT attempts,next_attempt,claim_id FROM pending_media').fetchone()
+    assert job['attempts'] == 1 and job['next_attempt'] > time.time() and job['claim_id'] is None
+
+
+def test_refusal_after_the_app_is_removed_keeps_the_image_queued(state):
+    con, settings = state
+    image = catchup.message_base('chat', 'm1') + '/hostedContents/image/$value'
+    store.record_message(con, conversation_id='chat', **catchup.normalise(message(attachments=[
+        dict(contentType='image/png', contentUrl=image)]), 'bot'))
+    calls = []
+    def respond(request):
+        calls.append(request)
+        store.mark_removed(con, 'chat')  # the uninstall lands while the request is in flight
+        return httpx.Response(403)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            await media.retry_pending(con, client, 'token', settings, source='graph')
+            await media.retry_pending(con, client, 'token', settings, source='graph')  # skipped while removed
+    asyncio.run(run())
+    item = json.loads(con.execute('SELECT attachments_json FROM messages').fetchone()[0])[0]
+    assert item.get('download_status') != 'unavailable' and len(calls) == 1
+    assert tuple(con.execute('SELECT attempts,claim_id FROM pending_media').fetchone()) == (0, None)

@@ -343,7 +343,7 @@ def teams_catchup(paths, routes, at, strict=False):
         for route in routes:
             if route['source'] != 'teams':
                 continue
-            found = []
+            found, removed = [], []
             for chat in route['chats']:
                 row = db.execute('SELECT c.type,c.first_seen,s.last_success,s.last_error,s.http_status FROM conversations c '
                                  'LEFT JOIN catchup s ON s.conversation_id=c.id WHERE c.id=?', (chat,)).fetchone()
@@ -351,8 +351,7 @@ def teams_catchup(paths, routes, at, strict=False):
                     found.append('the Toucan bot has not seen this Teams chat; add the Toucan app to it')
                     continue
                 if chat in gone:
-                    found.append('the Toucan app was removed from this Teams chat, so Toucan no longer sees its '
-                                 'messages; add the app back to the chat')
+                    removed.append(chat)
                     continue
                 if row['type'] == 'personal':
                     continue  # the bot's own 1:1 chats get every message by push
@@ -383,6 +382,12 @@ def teams_catchup(paths, routes, at, strict=False):
             if found:
                 where = f' ({len(found)} of {len(route["chats"])} chats)' if len(route['chats']) > 1 else ''
                 problems['teams:catchup:' + route['name']] = (route.get('label') or route['name']) + where + ': ' + found[0]
+            if removed:
+                # Its own key, so an earlier catch-up alert for the route doesn't hide the removal.
+                where = f' ({len(removed)} of {len(route["chats"])} chats)' if len(route['chats']) > 1 else ''
+                problems['teams:removed:' + route['name']] = (
+                    (route.get('label') or route['name']) + where + ': the Toucan app was removed from this Teams '
+                    'chat, so Toucan no longer sees its messages; add the app back to the chat')
         return problems
     finally:
         db.close()
