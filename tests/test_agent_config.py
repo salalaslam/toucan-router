@@ -50,7 +50,8 @@ def test_minimal_init_idempotency_and_private_backup(agent):
     assert not path.with_suffix('.toml.bak').exists()
     assert invoke('init', '--owner-name', 'Bob', '--timezone', 'UTC', code=2)
     assert path.read_bytes() == before
-    assert invoke('init', '--owner-name', 'Bob', '--timezone', 'UTC', '--force')['status'] == 'updated'
+    assert invoke('init', '--owner-name', 'Bob', '--timezone', 'UTC', '--force', '--telemetry', 'off')['status'] == 'updated'
+    assert tomllib.loads(path.read_text())['settings'] == dict(owner_name='Bob', timezone='UTC', telemetry=False, telemetry_asked=True)
     backup = path.with_suffix('.toml.bak')
     assert backup.read_bytes() == before
     assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in (path, backup))

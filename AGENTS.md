@@ -25,6 +25,12 @@ If you are an owner thread answering requests, read
 - Ask the operator before enabling a timer, adding a requester, switching a route from
   `draft` to `act`, or setting a route's `router` to `"live"`. Those changes let other people's
   messages reach an agent, and a live router can message the person to ask which project they mean.
+- The usage-data question is the operator's to answer. When a `toucan doctor` item has an `ask`
+  field (today only `telemetry`), put its `question` to the operator word for word with your
+  question tool (AskUserQuestion in Claude Code), offer its `options` as they are, and run the
+  `command` of the option they pick. Don't answer it yourself, don't choose or recommend an
+  option for them, and don't turn telemetry off with `toucan config set` or `TOUCAN_TELEMETRY=0`.
+  Nothing is sent until they say yes.
 
 ## Setting Toucan up
 
@@ -35,7 +41,11 @@ whole config before writing, so a bad change is refused and nothing is written.
 The loop is: run `toucan doctor --json`, run the `command` of the first `todo` or `warn` item,
 repeat. Each item is `{id, area, status, message, fix, command}`, with `status` one of `ok`,
 `todo`, `warn` or `skip`, `fix` naming a guide topic, and `command` the next thing to run.
-Stop when nothing is `todo` or `warn`.
+An item with an `ask` field needs the operator's answer first (see the rules above). Stop when
+nothing is `todo` or `warn`.
+
+After upgrading Toucan (`uv tool upgrade toucan-router`), run the same loop: new versions can
+add items, such as the usage-data question.
 
 ### 0. Prerequisites
 
@@ -49,11 +59,15 @@ Stop when nothing is `todo` or `warn`.
 
 ```sh
 uv tool install toucan-router                  # add toucan-teams-bot for Teams, toucan-router-tools for Loom or Sheets
-toucan init --owner-name 'NAME' --timezone 'Area/City' --owner-whatsapp 'NUMBER@s.whatsapp.net' --json
+toucan init --owner-name 'NAME' --timezone 'Area/City' --owner-whatsapp 'NUMBER@s.whatsapp.net' \
+  --telemetry on --json                        # or off: the operator's answer to the usage-data question
 ```
 
 Ask the operator for their name, IANA timezone and personal WhatsApp number before running
-`init`. Add `--owner-teams-id GUID` if they will route Teams chats. Suggest the smallest setup
+`init`, and in the same set of questions ask them the usage-data question from
+`toucan guide telemetry` (the "Asking" section has the exact wording and options). Pass their
+answer as `--telemetry on` or `--telemetry off`; leave the flag out if they haven't answered,
+and `doctor` will ask again. Add `--owner-teams-id GUID` if they will route Teams chats. Suggest the smallest setup
 that covers what they asked for: WhatsApp alone needs no cloud accounts, and Teams needs an
 Azure Bot and a Teams admin.
 
@@ -129,6 +143,7 @@ Finish by showing the operator `toucan doctor` output and anything you skipped.
 | New chat | `toucan discover ...`, then `toucan add route ...`. Each chat may be in only one route. |
 | New owner thread | `toucan add thread KEY`, then step 4 above |
 | New project for the router | `toucan add project KEY --name 'NAME' --alias ALIAS --thread KEY` |
+| Usage data, after asking the operator | `toucan telemetry on` or `toucan telemetry off` |
 | Router for a route | `toucan config set routes.NAME.router shadow` (logs only); `live` routes for real, with the operator's OK |
 | Remove something | `toucan remove person\|thread\|route\|project KEY` (refused while something still refers to it) |
 | Older unanswered messages | `toucan import-pending --route NAME --since ISO`, only if the operator asks |

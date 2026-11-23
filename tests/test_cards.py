@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from conftest import OWNER, PHONE
+from toucan import telemetry
 from toucan.config import Refused
 
 CARD = dict(category='deploy', want='Ship the billing fix', question='Release PR 109 to production now?',
@@ -127,7 +128,8 @@ def test_asking_the_same_question_again_adds_to_the_card_silently_and_a_new_ques
     assert len(world.app.rows('SELECT * FROM cards WHERE closed_at IS NULL')) == 1
 
 
-def test_digest_lists_waiting_cards_and_counts_what_threads_settled_yesterday(world):
+def test_digest_lists_waiting_cards_and_counts_what_threads_settled_yesterday(world, monkeypatch):
+    monkeypatch.delenv('TOUCAN_TELEMETRY')  # the owner has not answered the usage-data question yet
     world.seed()
     assert world.app.digest() == dict(waiting=[], handled_yesterday=0, sent=False, text=None)
     done = world.request('done')
@@ -141,6 +143,7 @@ def test_digest_lists_waiting_cards_and_counts_what_threads_settled_yesterday(wo
     text = world.sends[-1][7]
     assert text.startswith('*Waiting on you: 1*') and 'Release PR 109 to production now?' in text
     assert 'A) Yes, release now ←' in text and '1 handled without you yesterday.' in text
+    assert text.endswith('\n\n' + telemetry.DIGEST_LINE)
     owner_says(world, 'answer', f'T{req} A')
     assert world.app.digest()['sent'] is False
 

@@ -34,7 +34,8 @@ def guide(topic=None, listing=False):
     return resource('skills/toucan-owner-thread/SKILL.md' if topic == 'owner-thread' else f'docs/{topic}.md')
 
 
-def initialize(path, force=False, example=False, owner_name=None, timezone=None, owner_whatsapp=None, owner_teams_id=None):
+def initialize(path, force=False, example=False, owner_name=None, timezone=None, owner_whatsapp=None, owner_teams_id=None,
+               telemetry=None):
     if example:
         import tomllib
         example_text = files('toucan').joinpath('toucan.example.toml').read_text()
@@ -46,6 +47,8 @@ def initialize(path, force=False, example=False, owner_name=None, timezone=None,
     for key, value in dict(owner_name=owner_name, timezone=timezone, owner_whatsapp=owner_whatsapp, owner_teams_id=owner_teams_id).items():
         if value is not None:
             raw['settings'][key] = value
+    if telemetry is not None:
+        raw['settings'].update(telemetry=telemetry == 'on', telemetry_asked=True)
     configedit.validate(raw)
     if path.exists() and not force:
         try:
@@ -54,7 +57,7 @@ def initialize(path, force=False, example=False, owner_name=None, timezone=None,
             same = False
         if not same:
             raise config.ValidationError('config already exists with different values; use --force to overwrite')
-    plain_example = example and all(v is None for v in (owner_name, timezone, owner_whatsapp, owner_teams_id))
+    plain_example = example and all(v is None for v in (owner_name, timezone, owner_whatsapp, owner_teams_id, telemetry))
     status = configedit.save(path, raw, text=example_text if plain_example else None)
     private_dir(hooks_dir())
     private_dir(state_path().parent)
