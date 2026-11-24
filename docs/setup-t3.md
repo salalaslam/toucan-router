@@ -103,7 +103,7 @@ Wakes need only the hook URL. These optional features also read T3's local datab
 
 - finding the live thread behind a hook's task, so the config doesn't change when a thread
   rotates;
-- context size, for [thread rotation](operations.md#thread-rotation);
+- context size, shown by `toucan status` and `toucan rotate --check`;
 - rate-limit errors that ended a thread's latest turn, from its last run's recorded failure or
   its latest message, for re-wakes and the fallback thread;
 - what the owner typed in a thread, for `toucan resume`.

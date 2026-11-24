@@ -38,14 +38,13 @@ Secrets never go in this file. Webhook URLs live in hook files and the alert URL
 | `thread_rules` | none | Standing rules for every owner thread, printed by `toucan inbox` after the accuracy rule. Inbox prints them in full when a thread hasn't seen them (a rotated successor counts as new), when they change, or after `context_hours`; otherwise one line says how to print them again (`toucan inbox --thread T --rules`). Use a multi-line string for several paragraphs. |
 | `context_hours` | 24 | How much earlier chat history the inbox shows as context. |
 | `fallback_minutes` | 5 | Hand a rate-limited thread's unclaimed request to its fallback after this long. |
-| `rotate_tokens` | 200000 | Ask an owner thread to hand over to a fresh thread at this context size. A busy thread is asked too; its handover starts after the running turn. |
 | `pause_file` | none | A JSON file another tool writes to pause work, such as a quota guard. While it holds `"paused": true`, `toucan inbox` tells owner threads to keep answering people briefly and start no delegates or long work. Optional `since` and `until` (Unix seconds) and `reason` (text) are shown in the note. A missing or unreadable file means no pause. Routing carries on; to stop routing, use `toucan pause` (see operations). |
 | `done_gate` | `off` | `enforce` refuses a send to a person that says work is done, fixed, ready, live, verified or matches the designs, unless it links a GitHub issue or PR comment that shows a screenshot or output and was posted after the request arrived (within the last day for `toucan send`), or it says plainly the work is not checked yet. "Done" or "ready" for a document or link passes when the message links to it. There is no override, and a GitHub read that fails holds the send. `shadow` records what it would hold and sends anyway. Drafts and escalations to the owner are not checked. |
 | `ack_emoji` | `eyes` | On Teams routes with `post_as_bot`, the reaction Toucan puts on a new request when it arrives (received). `""` turns stage reactions off. Takes a Teams reaction ID or an alias `toucan-bot react` knows (`eye`, `eyes`, `check`, `thumbsup`). |
 | `work_emoji` | `""` | The reaction once an owner thread has claimed the request, or it is escalated (working). Empty keeps the `ack_emoji`. |
 | `done_emoji` | `""` | The reaction once Toucan has sent the final reply (done). Empty keeps the working reaction. A request closed without a reply loses its reaction. |
 | `outage_notice_minutes` | `0` (off) | When a thread and its fallback (if any) are both stopped at a model rate limit, a new request that has waited this long is closed and handed to a person: the project's `escalate_to` (once `escalate_from` has passed) on WhatsApp, else the owner through `drafts_whatsapp`. The requester is told once per outage, in the chat they wrote in: "Toucan can't pick this up right now. NAME has your message." No time is given. Only `act` routes; a Teams route needs `post_as_bot`. |
-| `rotate_stall_minutes` | 60 | Alert when a handover hasn't finished after this long. |
+| `rotate_stall_minutes` | 60 | Alert when a handover started with `toucan rotate` hasn't finished after this long. |
 | `router_general_thread` | none | Thread key that gets off-topic requests. Required once any route has `router` other than `"off"`. |
 | `router_commands` | `[]` | Commands the router tries in order, each an array such as `["claude", "-p"]`. Each reads the prompt on stdin and must print one JSON object. Empty means requests the rules can't place are decided as `router unavailable` (on a live route, the person is asked). |
 | `router_timeout_seconds` | 60 | Longest one router command may run. At most `router_budget_seconds`. |
@@ -139,7 +138,6 @@ One table per T3 owner thread. See [setup-t3.md](setup-t3.md).
 | `t3_thread` | no | T3 thread ID, used only when Toucan can't find the live thread from the hook's task. |
 | `project` | no | Project key used to resolve escalation delegation. Other free text is allowed. |
 | `fallback` | no | Another thread key that takes requests while this one is rate-limited. |
-| `rotate_tokens` | no | Overrides `settings.rotate_tokens` for this thread. |
 | `waiter` | no | Default `true`. Set `false` for a thread whose turns stay short because it hands work to delegates (a desk). `toucan inbox` then stops asking it to start `toucan wait`, and `toucan setup-prompt` leaves that step out. `toucan add thread KEY --no-waiter` sets it. See [operations](operations.md#waiting-for-requests). |
 
 ## `[projects.KEY]`

@@ -5,7 +5,7 @@ import pytest
 
 from toucan import sources
 from toucan.cli import main
-from toucan.config import ValidationError, load
+from toucan.config import ValidationError, load, warnings
 from toucan.core import App
 from toucan.storage import connect
 
@@ -54,88 +54,49 @@ def test_invalid_or_unknown_hooks_do_not_resolve(world, url):
 
 
 @pytest.mark.parametrize('change,match', [
-    ('rotate_tokens = 200000', 'integer'), ('rotate_stall_minutes = 60', 'positive'),
+    ('rotate_stall_minutes = 60', 'positive'),
     ('t3_thread = "11111111-1111-1111-1111-111111111111"', 'non-empty text'),
 ])
 def test_rotation_config_validation(world, change, match):
-    value = '1.5' if change.startswith('rotate_tokens') else '0' if change.startswith('rotate_stall') else '""'
+    value = '0' if change.startswith('rotate_stall') else '""'
     world.config_path.write_text(world.config_text.replace(change, change.split(' = ')[0] + ' = ' + value))
     with pytest.raises(ValidationError, match=match):
         load(world.config_path)
 
 
-@pytest.mark.parametrize('value', ['0', '-1', '1.5', 'true', '"200000"'])
-def test_thread_rotation_limit_must_be_a_positive_integer(world, value):
-    world.config_path.write_text(world.config_text.replace('[threads.project-a]', f'[threads.project-a]\nrotate_tokens = {value}'))
-    with pytest.raises(ValidationError, match='positive integer'):
-        load(world.config_path)
-
-
-def test_rotation_defaults_and_override(world):
-    text = world.config_text.replace('rotate_tokens = 200000', '# rotate_tokens = 200000')
-    text = text.replace('rotate_stall_minutes = 60', '# rotate_stall_minutes = 60')
-    world.config_path.write_text(text.replace('[threads.project-a]', '[threads.project-a]\nrotate_tokens = 400000'))
+@pytest.mark.parametrize('where', ['settings', 'thread'])
+def test_old_rotate_tokens_settings_load_but_are_ignored_with_a_warning(world, where):
+    marker = '[settings]' if where == 'settings' else '[threads.project-a]'
+    world.config_path.write_text(world.config_text.replace(marker, f'{marker}\nrotate_tokens = 1000', 1))
     cfg = load(world.config_path)
-    assert cfg['settings']['rotate_tokens'] == 200000 and cfg['settings']['rotate_stall_minutes'] == 60
+    prefix = 'settings' if where == 'settings' else 'threads.project-a'
+    assert [w for w in warnings(cfg, world.paths) if 'rotate_tokens' in w] == [
+        f'{prefix}.rotate_tokens is ignored: Toucan no longer rotates threads by itself; hand over by hand with `toucan rotate`']
     world.seed()
-    world.t3_owner(used=399999)
+    world.t3_owner(used=900000)
     app = App(cfg, world.db, world.fx, world.paths)
-    assert app.sync()['wakes'] == []
-    world.t3_owner(used=400000)
-    assert app.sync()['wakes'][0]['rotate']
+    assert not any(w.get('rotate') for w in app.sync()['wakes'])
+    assert app.rotation('project-a') is None
 
 
-def owner_in_state(world, req, state):
-    world.t3_owner(used=199999 if state == 'below' else 412000,
-                   status=state if state in ('running', 'queued', 'unknown-status') else 'completed',
-                   pending=[{'id': 'background'}] if state == 'background' else [])
-    if state == 'limited':
-        world.t3('limit', world.now, 'API Error: 429 rate_limit_error', thread='owner-thread', role='assistant')
-    if state in ('pending', 'changed'):
-        world.db.execute("UPDATE requests SET state=?,change_pending=? WHERE id=?",
-                         ('new' if state == 'pending' else 'claimed', int(state == 'changed'), req))
-    if state.endswith('-outbox'):
-        world.db.execute('INSERT INTO outbox (request_id,state,updated_at) VALUES (?,?,?)',
-                         (req, state.split('-')[0], world.now))
-    with sqlite3.connect(world.paths.t3) as db:
-        if state in ('unknown-usage', 'missing-background'):
-            path = '$.contextUsage' if state == 'unknown-usage' else '$.pendingBackgroundTasks'
-            db.execute('UPDATE orchestration_v2_projection_provider_threads SET payload_json=json_remove(payload_json,?)', (path,))
-        if state == 'missing-provider':
-            db.execute('DELETE FROM orchestration_v2_projection_provider_threads')
-        if state == 'missing-run':
-            db.execute('DELETE FROM orchestration_v2_projection_runs')
-        if state == 'subagent':
-            db.execute("INSERT INTO orchestration_v2_projection_subagents VALUES ('agent','owner-thread','running')")
-
-
-@pytest.mark.parametrize('blocked', ['below', 'unknown-usage', 'missing-provider', 'limited', 'pending-outbox', 'sending-outbox'])
-def test_rotation_waits_until_size_is_known_and_deliveries_are_clear(world, blocked):
+@pytest.mark.parametrize('status', ['completed', 'running'])
+def test_a_large_owner_thread_is_never_asked_to_rotate(world, status):
     world.seed()
     req = world.request()
     world.app.claim([req], 'project-a')
-    owner_in_state(world, req, blocked)
-    assert not any(w.get('rotate') for w in world.app.sync()['wakes'])
+    world.t3_owner(used=900000, status=status)
+    for _ in range(3):
+        assert not any(w.get('rotate') for w in world.app.sync()['wakes'])
+        world.advance(20 * 60)
     assert world.app.rotation('project-a') is None
-
-
-@pytest.mark.parametrize('busy', [
-    'running', 'queued', 'unknown-status', 'background', 'missing-background', 'missing-run', 'subagent', 'pending', 'changed',
-])
-def test_a_busy_owner_or_one_with_requests_waiting_is_still_asked_to_hand_over(world, busy):
-    # T3 queues the rotation wake behind the running turn, so the handover starts between turns.
-    world.seed()
-    req = world.request()
-    world.app.claim([req], 'project-a')
-    owner_in_state(world, req, busy)
-    assert any(w.get('rotate') for w in world.app.sync()['wakes'])
-    assert world.app.rotation('project-a')['old'] == 'owner-thread'
+    assert world.app.rows("SELECT * FROM events WHERE kind='rotation_requested'") == []
 
 
 def test_new_requests_get_a_fresh_wake_budget_for_the_successor(world):
     world.seed()
     req = world.request()
     world.t3_owner(status='running')
+    world.app.request_rotation('project-a', 'owner-thread', 412000)
     for _ in range(world.cfg['settings']['max_wakes'] + 1):
         world.app.sync()
         world.advance(20 * 60)
@@ -149,44 +110,6 @@ def test_new_requests_get_a_fresh_wake_budget_for_the_successor(world):
     assert world.app.get(req)['wakes'] == 1 and world.hooks()[-1]['count'] == 1
 
 
-@pytest.mark.parametrize('status', ['completed', 'failed', 'cancelled', 'interrupted'])
-def test_rotation_requests_once_preserves_claim_and_wake_budget(world, status):
-    world.seed()
-    req = world.request()
-    world.app.claim([req], 'project-a')
-    before = world.app.get(req)
-    world.t3_owner(status=status)
-    # The latest run wins even when an older run still says running.
-    with sqlite3.connect(world.paths.t3) as db:
-        db.execute('INSERT INTO orchestration_v2_projection_runs (run_id,thread_id,ordinal,status) VALUES (?,?,?,?)', ('older', 'owner-thread', 0, 'running'))
-    report = world.app.sync()
-    assert len(report['wakes']) == 1
-    wake = report['wakes'][0]
-    assert (wake['thread'], wake['count'], wake['rotate']) == ('project-a', 0, True)
-    assert '412k' in wake['summary'] and '200k' in wake['summary']
-    assert '`toucan rotate --thread project-a`' in wake['summary']
-    assert world.hooks()[-1] == report['wakes'][0]
-    assert world.app.rotation('project-a') == dict(old='owner-thread', time=world.now, tokens=412000)
-    assert world.app.get(req) == before
-    world.advance(15 * 60)
-    assert world.app.sync()['wakes'] == []
-    assert len(world.app.rows("SELECT * FROM events WHERE kind='rotation_requested'")) == 1
-
-
-@pytest.mark.parametrize('failure', [500, RuntimeError('https://hook.invalid/SECRET-TOKEN')])
-def test_rotation_hook_failure_can_retry_without_leaking_secrets(world, failure):
-    world.seed()
-    world.t3_owner()
-    world.post_status = failure
-    world.app.sync()
-    assert world.app.rotation('project-a') is None
-    assert [a['key'] for a in world.alerts()] == ['hook:project-a']
-    assert 'SECRET-TOKEN' not in json.dumps(world.alerts() + world.app.rows('SELECT * FROM events'))
-    world.post_status = 202
-    world.app.sync()
-    assert world.app.rotation('project-a') and world.alerts() == []
-
-
 @pytest.mark.parametrize('mode', ['dry', 'shadow'])
 def test_rotation_obeys_dry_and_shadow_delivery_rules(world, mode):
     world.seed()
@@ -195,7 +118,7 @@ def test_rotation_obeys_dry_and_shadow_delivery_rules(world, mode):
     before = list(world.db.iterdump())
     app = App(world.cfg, db, world.fx, world.paths, dry=mode == 'dry', shadow=mode == 'shadow')
     try:
-        assert app.sync()['wakes'][0]['rotate']
+        app.request_rotation('project-a', 'owner-thread', 412000)
         assert app.rotation('project-a')
         world.t3_owner(thread='successor', task='new-task')
         app.sync()
@@ -211,6 +134,7 @@ def test_rotation_obeys_dry_and_shadow_delivery_rules(world, mode):
 def test_rotation_stalls_alerts_once_then_completes_with_one_notice(world, invoke, capsys):
     world.seed()
     world.t3_owner()
+    world.app.request_rotation('project-a', 'owner-thread', 412000)
     world.app.sync()
     world.advance(60 * 60)
     world.app.sync()
@@ -277,7 +201,7 @@ def test_manual_rotation_output_and_checks_preserve_open_work_without_tokens(wor
 def test_unresolved_hook_cannot_complete_rotation_using_a_stale_configured_thread(world, invoke, capsys):
     world.seed()
     world.t3_owner()
-    world.app.sync()
+    world.app.request_rotation('project-a', 'owner-thread', 412000)
     with sqlite3.connect(world.paths.t3) as db:
         db.execute('DELETE FROM scheduled_tasks')
     assert invoke(['rotate', '--thread', 'project-a', '--check', '--json']) == 3

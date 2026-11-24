@@ -134,7 +134,7 @@ If `toucan hook check KEY` fails or the operator asks you to become an owner thr
 
 ## Handing over (rotation)
 
-When Toucan asks you to rotate, or the owner does, run `toucan rotate --thread KEY` and follow
+When the owner asks you to rotate, run `toucan rotate --thread KEY` and follow
 the instructions it prints exactly. When `toucan rotate --thread KEY --check` says the handover
 is done, stop your background `toucan wait`, don't start it again, and end your turn.
 

@@ -66,7 +66,7 @@ budget. A screenshot that finishes downloading is reported once, without countin
 2. Transcribe new voice notes, outside the transaction, because transcription is slow.
 3. In one transaction: check source health, read Teams catch-up state, load the WhatsApp
    identity map, read the owner's answers to decision cards, read every route, create
-   requests, expire held requests, wake threads, ask oversized threads to rotate, check
+   requests, expire held requests, wake threads, track handovers in progress, check
    promises and claims, expire stuck deliveries, and reconcile alerts.
 4. After the commit: send queued notices and arrival reactions.
 5. Run the router stage for requests it holds, then wake the threads it placed them in.

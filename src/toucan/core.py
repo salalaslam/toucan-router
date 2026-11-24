@@ -512,7 +512,7 @@ class App:
             limited = self.rate_limits(problems, now)
             outage = self.outage_notices(now, limited)
             self.wake(report, problems, now, limited)
-            self.rotate_threads(report, problems, now, limited)
+            self.track_rotations(problems, now, limited)
             posted = self.rows(f"SELECT id,thread FROM requests WHERE state IN {OPEN} "
                                "AND reply_source='teams' AND EXISTS (SELECT 1 FROM outbox o JOIN messages m "
                                "ON m.source='teams' AND m.chat=requests.reply_chat AND m.is_owner=1 AND m.deleted=0 "
@@ -1119,13 +1119,15 @@ class App:
         self.record('rotation_requested', key, **rotation)
         return rotation
 
-    def rotate_threads(self, report, problems, now, limited):
+    def track_rotations(self, problems, now, limited):
+        """Finish or flag handovers started with `toucan rotate`. Toucan never starts one by itself:
+        automatic rotation at a context size was removed, since compaction keeps threads small."""
         if not t3.probe(self.paths):
             return
         for key, thread in self.cfg['threads'].items():
             if key in limited:
                 continue
-            live, rotation = self.live_thread(key), self.rotation(key)
+            rotation = self.rotation(key)
             if rotation:
                 resolved = sources.hook_file_thread(self.paths, thread['hook_file'])
                 if resolved and resolved != rotation['old']:
@@ -1144,26 +1146,6 @@ class App:
                     at = self.local(rotation['time']).split(' ', 1)[1]
                     problems['rotate:' + key] = (f"{key}: rotation requested at {at} hasn't finished; "
                                                 'the hook still points at the old thread')
-                continue
-            usage = sources.thread_usage(self.paths, live)
-            threshold = thread.get('rotate_tokens', self.settings['rotate_tokens'])
-            # A busy thread or one with requests waiting still hands over: T3 queues the webhook run behind
-            # the running turn, so the handover starts at the next gap between turns. Waiting for an idle
-            # thread let an always-busy owner grow to 900k tokens. New requests stay new for the successor.
-            if (not live or not usage or usage['used_tokens'] < threshold or self.db.execute(
-                    "SELECT 1 FROM outbox o JOIN requests r ON r.id=o.request_id "
-                    "WHERE r.thread=? AND o.state IN ('pending','sending')", (key,)).fetchone()):
-                continue
-            tokens = usage['used_tokens']
-            summary = (f'{key}: your context is {tokens / 1000:g}k tokens, over the {threshold / 1000:g}k limit. '
-                       f'Hand over to a fresh thread now: run `toucan rotate --thread {key}` and follow its steps exactly.')
-            payload = dict(thread=key, summary=summary, count=0, rotate=True)
-            report['wakes'].append(payload)
-            if self.post_hook(key, payload):
-                self.request_rotation(key, live, tokens)
-            else:
-                problems['hook:' + key] = f'{key}: webhook failed; requests retained, check hook file and task'
-                self.record('wake_failed', key, count=0, rotate=True)
 
     def rotate(self, key, check=False, reset=False):
         if key not in self.cfg['threads']:

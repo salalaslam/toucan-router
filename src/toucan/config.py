@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DEFAULTS = dict(rewake_minutes=15, wake_gap_minutes=2, max_wakes=3, claimed_stale_hours=4,
                 done_unclosed_minutes=30, whatsapp_stale_minutes=120, rate_per_hour=20,
-                context_hours=24, ack_alert_minutes=5, fallback_minutes=5, rotate_tokens=200000,
+                context_hours=24, ack_alert_minutes=5, fallback_minutes=5,
                 rotate_stall_minutes=60, owner_t3_threads=(), owner_whatsapp='', drafts_whatsapp='', owner_teams_id='', owner_name='the owner', timezone='UTC', alert_url='',
                 alert_url_file='', upload_command='toucan-upload-loom', transcribe='', followup_minutes=120,
                 router_general_thread='', router_commands=(), router_timeout_seconds=60, router_history=20,
@@ -22,7 +22,8 @@ PHONE = re.compile(r'^\d+@s\.whatsapp\.net$')
 JID = re.compile(r'^\d+@(s\.whatsapp\.net|lid|g\.us)$')
 GROUP = re.compile(r'^\d+(-\d+)?@g\.us$')
 # Keys toucan reads (active_ts is added by load). Anything else is likely a typo that would do nothing.
-KEYS = dict(settings=set(DEFAULTS) | {'ntfy', 'telemetry'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email', 'github'},
+# rotate_tokens is still accepted so older configs load; automatic rotation is gone and warnings() says so.
+KEYS = dict(settings=set(DEFAULTS) | {'ntfy', 'telemetry', 'rotate_tokens'}, people={'name', 'role', 'teams_id', 'whatsapp', 'email', 'github'},
             threads={'t3_thread', 'project', 'hook_file', 'fallback', 'rotate_tokens', 'waiter'},
             projects={'name', 'aliases', 'description', 'thread', 'escalate_to', 'escalate_from', 'escalate_wait_minutes', 'rules', 'ledger'},
             routes={'name', 'label', 'source', 'chats', 'thread', 'mode', 'requesters', 'active_from', 'router',
@@ -102,7 +103,7 @@ def validate(cfg):
             value = settings[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < float('inf'):
                 raise ValidationError(f'settings.{key} must be positive')
-    for key in ('max_wakes', 'rate_per_hour', 'rotate_tokens', 'router_history', 'max_bounces'):
+    for key in ('max_wakes', 'rate_per_hour', 'router_history', 'max_bounces'):
         if not isinstance(settings[key], int):
             raise ValidationError(f'settings.{key} must be an integer')
     for key in TEXT_SETTINGS & settings.keys():
@@ -184,8 +185,6 @@ def validate(cfg):
             raise ValidationError(f'thread {key}: hook_file required')
         if 't3_thread' in thread and (not isinstance(thread['t3_thread'], str) or not thread['t3_thread'].strip()):
             raise ValidationError(f'thread {key}: t3_thread must be non-empty text')
-        if 'rotate_tokens' in thread and (type(thread['rotate_tokens']) is not int or thread['rotate_tokens'] <= 0):
-            raise ValidationError(f'thread {key}: rotate_tokens must be a positive integer')
         if not isinstance(thread.get('waiter', True), bool):
             raise ValidationError(f'thread {key}: waiter must be true or false')
         if 'fallback' in thread and (thread['fallback'] not in threads or thread['fallback'] == key):
@@ -315,6 +314,9 @@ def warnings(cfg, paths=None):
         result.append("sources.teams.reader_state is gone; Teams now reads the Toucan bot's store")
     if 'ntfy' in cfg['settings']:
         result.append('settings.ntfy is renamed to alert_url')
+    stale = ['settings'] * ('rotate_tokens' in cfg['settings']) + [f'threads.{k}' for k, t in cfg['threads'].items() if 'rotate_tokens' in t]
+    result += [f'{where}.rotate_tokens is ignored: Toucan no longer rotates threads by itself; '
+               'hand over by hand with `toucan rotate`' for where in stale]
     unknown = [k for k in cfg if k not in KEYS] + [f'settings.{k}' for k in cfg['settings'] if k not in KEYS['settings']]
     for table in ('people', 'threads', 'projects'):
         unknown += [f'{table}.{key}.{k}' for key, entry in cfg[table].items() for k in entry if k not in KEYS[table]]

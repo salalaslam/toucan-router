@@ -21,8 +21,7 @@ ack_emoji = "eyes"   # Toucan reacts to new Teams requests on post_as_bot routes
 # work_emoji = "eyes"   # the reaction changes to this once a thread claims the request (empty keeps ack_emoji)
 # done_emoji = "check"  # and to this after the final reply (empty keeps the working reaction)
 done_gate = "off"     # "enforce": a send that says done/fixed/ready/live needs a GitHub proof comment or "not checked yet"
-rotate_tokens = 200000       # ask owner threads to hand over at this context size
-rotate_stall_minutes = 60    # alert if a handover has not finished by then
+rotate_stall_minutes = 60    # alert if a handover started with `toucan rotate` has not finished by then
 # transcribe = "chatgpt-transcribe"   # voice notes become text before they reach a thread
 # thread_rules = """Standing rules printed to every owner thread with each inbox."""
 # pause_file = "~/.cache/quota-pause/state.json"   # while it holds "paused": true, owner threads keep work short
@@ -56,7 +55,6 @@ email = ["alice@example.com"]
 t3_thread = "11111111-1111-1111-1111-111111111111"   # optional fallback; the hook determines the live thread
 project = "project-a"
 hook_file = "~/.config/toucan/hooks/project-a.hook"
-# rotate_tokens = 300000   # override the context limit for this thread
 # fallback = "standby"   # takes this thread's requests while it is stopped by a rate limit
 
 # [threads.standby]   # put it on the other provider

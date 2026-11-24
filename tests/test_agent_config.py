@@ -76,7 +76,7 @@ def test_add_replace_and_remove_config_entities(agent):
     assert invoke('add', 'person', 'alice', '--name', 'Bob', '--replace')['status'] == 'updated'
     assert invoke(*person, '--replace')['status'] == 'updated'
     assert invoke('add', 'thread', 'project-b')['status'] == 'updated'
-    args = ('add', 'thread', 'project-a', '--project', 'project-a', '--fallback', 'project-b', '--t3-thread', '00000000-0000-0000-0000-000000000000', '--rotate-tokens', '1000')
+    args = ('add', 'thread', 'project-a', '--project', 'project-a', '--fallback', 'project-b', '--t3-thread', '00000000-0000-0000-0000-000000000000')
     assert invoke(*args)['status'] == 'updated'
     assert invoke(*args)['status'] == 'unchanged'
     route = ('add', 'route', 'inbox', '--source', 'whatsapp', '--chat', '15550000001@s.whatsapp.net', '--thread', 'project-a', '--requester', 'alice', '--mode', 'draft', '--label', 'Inbox', '--reply-prefix', 'Reply')

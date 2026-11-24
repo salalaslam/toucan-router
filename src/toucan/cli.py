@@ -218,7 +218,6 @@ def parser():
         elif kind == 'thread':
             for flag in ('project', 'fallback', 't3-thread'):
                 sub.add_argument('--' + flag)
-            sub.add_argument('--rotate-tokens', type=int)
             sub.add_argument('--no-waiter', dest='waiter', action='store_false', default=None,
                              help='short-turn thread that hands work to delegates: inbox stops asking for `toucan wait`')
         else:
@@ -585,7 +584,7 @@ def agent_command(args, effects, paths):
         if args.kind == 'person':
             names = ('name', 'role', 'whatsapp', 'teams_id', 'email')
         elif args.kind == 'thread':
-            names = ('project', 'fallback', 't3_thread', 'rotate_tokens', 'waiter')
+            names = ('project', 'fallback', 't3_thread', 'waiter')
         elif args.kind == 'project':
             names = ('name', 'aliases', 'description', 'thread')
         else:

@@ -650,7 +650,9 @@ def test_older_code_neither_wakes_nor_hands_out_a_held_request(world, old_toucan
     world.db.execute("DELETE FROM meta WHERE key='router:lease'")
     assert request(world, req) == ('project-a', 'asked' if asked else 'pending', 'held')
     db = old_toucan['storage'].connect(world.db_path)
-    old = old_toucan['core'].App(world.cfg, db, world.fx, world.paths)
+    # Older code still reads rotate_tokens, which its own config defaults supplied.
+    cfg = dict(world.cfg, settings=world.cfg['settings'] | {'rotate_tokens': 200000})
+    old = old_toucan['core'].App(cfg, db, world.fx, world.paths)
     world.advance(30 * 60)
     old.sync()
     assert world.hooks() == [] and old.pending('project-a') == []
