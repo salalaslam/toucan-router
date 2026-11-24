@@ -171,7 +171,8 @@ request closed without a reply loses its reaction.
   reaction, at the stage of the least advanced one. With `photo_burst_seconds`, a photo that
   joined a request is one of its messages, so an album's newest photo carries it.
 - WhatsApp keeps one reaction per sender on a message, so a new stage replaces the old one.
-  Toucan sends the reaction with `wacli send react` (`--sender` for group messages) and removes
+  Toucan sends the reaction with `wacli send react --sender`, naming who wrote the message (without it
+  WhatsApp takes the target for one of Toucan's own messages and shows nothing), and removes
   it with an empty reaction.
 - Reactions go out during `toucan sync`, at most four calls a sync, never in a dry run. A
   failed or timed-out call is retried on the next syncs, three times per stage, then `toucan

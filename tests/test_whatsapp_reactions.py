@@ -47,7 +47,8 @@ def test_received_then_done_with_no_working_stage(world):
     world.seed()
     req = world.request()
     assert reacts(world) == [('req', EYES)]
-    assert world.sends[0] == ['wacli', '--json', 'send', 'react', '--to', '15550000001@s.whatsapp.net', '--id', 'req', '--reaction', EYES]
+    assert world.sends[0] == ['wacli', '--json', 'send', 'react', '--to', '15550000001@s.whatsapp.net', '--id', 'req', '--reaction', EYES,
+                              '--sender', '15550000001@s.whatsapp.net']  # without it the target counts as Toucan's own message
     claim = world.app.claim([req], 'project-a')
     world.advance(60)
     world.app.sync()

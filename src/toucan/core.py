@@ -1569,7 +1569,9 @@ class App:
                 else:
                     argv = ['wacli', '--json', 'send', 'react', '--to', chat, '--id', part['msg_id'],
                             '--reaction', whatsapp_emoji(emoji) if emoji else '']
-                    argv += ['--sender', part['sender_raw']] if chat.endswith('@g.us') and part['sender_raw'] else []
+                    # Always name the sender: without it wacli (whatsmeow) marks the target as a message Toucan sent,
+                    # so in a 1:1 chat the reaction points at no message and nothing shows, though the call succeeds.
+                    argv += ['--sender', part['sender_raw']] if part['sender_raw'] else []
                     argv += ['--store', str(self.paths.wa)]
                 try:
                     result = local_run(self.fx, argv, timeout=ACK_TIMEOUT if part['source'] == 'teams' else WA_ACK_TIMEOUT)
