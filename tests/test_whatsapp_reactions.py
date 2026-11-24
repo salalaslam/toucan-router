@@ -196,7 +196,7 @@ def test_dry_run_sends_no_reaction(world):
 
 @pytest.mark.parametrize('value,emoji', [
     ('eyes', EYES), ('check', CHECK), ('done', CHECK), ('thumbsup', '\U0001F44D'), ('1f440_eyes', EYES),
-    ('2705_whiteheavycheckmark', CHECK), (CHECK, CHECK), ('custom_reaction', None), ('', None)])
+    ('2705_whiteheavycheckmark', CHECK), ('holdon', '\u23F3'), (CHECK, CHECK), ('custom_reaction', None), ('', None)])
 def test_stage_emoji_settings_map_to_whatsapp_emoji(value, emoji):
     assert whatsapp_emoji(value) == emoji
 

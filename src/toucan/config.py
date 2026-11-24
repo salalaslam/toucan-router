@@ -41,7 +41,8 @@ LIST_SETTINGS = {'router_commands', 'owner_t3_threads'}
 # ack_emoji, work_emoji and done_emoji hold Teams reaction IDs or aliases. A WhatsApp reaction is the emoji itself.
 WHATSAPP_EMOJI = {'eye': '\U0001F441\uFE0F', 'eyes': '\U0001F440', 'check': '\u2705', 'done': '\u2705', 'pin': '\U0001F4CC',
                   'thumbsup': '\U0001F44D', 'like': '\U0001F44D', 'heart': '\u2764\uFE0F', 'laugh': '\U0001F606',
-                  'surprised': '\U0001F62E', 'sad': '\U0001F622', 'angry': '\U0001F621'}
+                  'surprised': '\U0001F62E', 'sad': '\U0001F622', 'angry': '\U0001F621',
+                  'holdon': '\u23F3'}  # holdon is Teams' animated hourglass
 
 
 class ValidationError(ValueError):
