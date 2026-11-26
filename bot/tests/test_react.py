@@ -26,14 +26,14 @@ def bot(tmp_path, monkeypatch):
     monkeypatch.setattr(names, "load_chats", lambda: {"19:chat": {"name": "Alice", "type": "oneOnOne"}})
 
 
-def responses(monkeypatch, replies):
+def responses(monkeypatch, replies, *, body=None):
     """Use the real SDK with a fake HTTP transport and record retry delays."""
     requests, sleeps = [], []
 
     def handler(request):
         status, headers = replies[len(requests)]
         requests.append(request)
-        return httpx.Response(status, headers=headers)
+        return httpx.Response(status, headers=headers, json=body)
 
     class App:
         def __init__(self, **kw):
@@ -49,6 +49,27 @@ def responses(monkeypatch, replies):
     monkeypatch.setattr(microsoft_teams.apps, "App", App)
     monkeypatch.setattr(cli.asyncio, "sleep", sleep)
     return requests, sleeps
+
+
+def test_edit_updates_the_existing_activity_with_the_mention_and_quote(bot, monkeypatch, capsys):
+    aad_id = "00000000-0000-0000-0000-00000000000a"
+    with store.connect(config.db_path()) as con:
+        store.remember_member(con, "19:chat", SimpleNamespace(id="29:alice", aad_object_id=aad_id, name="Alice"))
+    requests, _ = responses(monkeypatch, [(200, {})], body={"id": "1730"})
+    args = ["edit", "--to", "Alice", "--activity", "1730", "--quote", "1729",
+            "--text", f"@[{aad_id}] please read the message above.", "--json"]
+    assert cli.main([*args, "--dry-run"]) == 0
+    assert requests == []
+    assert json.loads(capsys.readouterr().out)["dry_run"]
+    assert cli.main(args) == 0
+    [request] = requests
+    assert request.method == "PUT"
+    assert str(request.url) == "https://smba.example/region/v3/conversations/19:chat/activities/1730"
+    body = json.loads(request.content)
+    assert body["text"] == '<quoted messageId="1729"/><p><at>Alice</at> please read the message above.</p>'
+    assert [(entity["type"], entity.get("mentioned", {}).get("id")) for entity in body["entities"]] == [
+        ("quotedReply", None), ("mention", "29:alice")]
+    assert json.loads(capsys.readouterr().out)["activity_id"] == "1730"
 
 
 @pytest.mark.parametrize("emoji,expected", [

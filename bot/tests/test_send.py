@@ -282,9 +282,12 @@ def test_delivery_deadline_distinguishes_dispatch_from_setup_and_rejected_retrie
     assert len(calls) == (1 if phase in ('dispatch', 'retry') else 0)
 
 
-@pytest.mark.parametrize('receipt,expected', [('activity-1', 0), (None, 4), ('malformed', 4)])
+@pytest.mark.parametrize('receipt,expected,quotes', [
+    ('activity-1', 0, ()), (None, 4, ()), ('malformed', 4, ()),
+    ('activity-1', 0, ('1730', '1731')),
+])
 def test_real_sdk_send_uses_cancellable_auth_and_requires_connector_receipt(
-        send_environment, monkeypatch, receipt, expected):
+        send_environment, monkeypatch, receipt, expected, quotes):
     import base64
     import json
     import time
@@ -303,7 +306,9 @@ def test_real_sdk_send_uses_cancellable_auth_and_requires_connector_receipt(
         assert request.method == 'POST'
         body = json.loads(request.content)
         assert body['textFormat'] == 'xml'
-        assert body['text'] == '<p>hello</p>'
+        assert body['text'] == ''.join(f'<quoted messageId="{quote}"/>' for quote in quotes) + '<p>hello</p>'
+        assert [entity['quotedReply']['messageId'] for entity in body.get('entities', [])
+                if entity['type'] == 'quotedReply'] == list(quotes)
         assert str(request.url) == 'https://smba.example.com/v3/conversations/chat/activities'
         assert request.headers['Authorization'] == 'Bearer ' + token
         if receipt == 'malformed':
@@ -315,7 +320,10 @@ def test_real_sdk_send_uses_cancellable_auth_and_requires_connector_receipt(
         return response
     # Patch the shared class method, including SDK modules that import an alias.
     monkeypatch.setattr(httpx.AsyncClient, 'send', send_http)
-    assert cli.main(['send', '--conversation', 'chat', '--text', 'hello']) == expected
+    args = ['send', '--conversation', 'chat', '--text', 'hello']
+    for quote in quotes:
+        args.extend(['--quote', quote])
+    assert cli.main(args) == expected
     assert len(requests) == 2
 
 

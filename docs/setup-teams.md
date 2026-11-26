@@ -284,6 +284,7 @@ Any message you post in the chat after a draft arrives counts as posting that dr
 toucan-bot send --to 'Project A' --text 'The build is green.' --dry-run
 toucan-bot send --to Bob --text '...'           # your own human 1:1 with Bob, with the bot added
 toucan-bot react --to 'Project A' --message ID --emoji eyes
+toucan-bot edit --to 'Project A' --activity ID --text 'The build passed.'
 toucan-bot delete --conversation ID --activity ID
 toucan-bot reset --yes                          # forget the stored app ID and secret
 ```
@@ -315,13 +316,23 @@ prints the prepared size. Through the router, `toucan reply --file` and `toucan 
 on a `post_as_bot` route pass a still image to the bot and refuse other files; send those
 another way.
 
-Tags: `@[ENTRA_ID]` in `toucan-bot send --text` becomes a Teams mention, `<at>Name</at>` plus a
+To quote an earlier message in the destination chat, run
+`toucan-bot send --to 'Project A' --quote 1730000000000 --text 'This is ready to retest.'`.
+Repeat `--quote` to include several messages. Use the message ID from the Teams message link
+or from `toucan-bot messages --json`. Teams supplies the quoted preview.
+
+Tags: `@[ENTRA_ID]` in `toucan-bot send --text` or `toucan-bot edit --text` becomes a Teams mention, `<at>Name</at>` plus a
 mention entity, using the display name and Teams user ID from that chat's stored roster. A tag
 for someone not in the roster, or one that is not an Entra object ID, refuses the whole
 message. In `toucan reply` and `toucan send`, `@[KEY]` names a person key from the config
 (`@[owner]` for the owner). The router passes their `teams_id` to the bot on `post_as_bot`
 routes and writes their name on other routes. Each chat's roster refresh is limited to 60
 seconds, so an unanswered Connector request cannot stall later refreshes.
+
+`toucan-bot edit` replaces the contents of a message Toucan posted, using the activity ID from
+`send`. Supply `--quote MESSAGE_ID` for each quote you want in the replacement. Use
+`--dry-run` to check the destination, mentions and quotes before making the edit. If the
+command exits with code 4, check the message in Teams before retrying.
 
 `toucan-bot send` exits with code 4 when Teams may have accepted the message but the reply
 never arrived. Check the chat before sending again. The router records such sends as

@@ -1,7 +1,7 @@
 """toucan-bot: run the Teams bot and post as Toucan.
 
 Exit codes: 0 success, 1 operational failure, 2 usage or missing setup,
-4 ambiguous send or reaction (may have landed; inspect before retrying).
+4 ambiguous send, edit or reaction (may have landed; inspect before retrying).
 """
 
 from __future__ import annotations
@@ -11,8 +11,10 @@ import asyncio
 import dataclasses
 import json
 import math
+import re
 import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
@@ -100,10 +102,21 @@ class UncertainSend(Exception):
     """The connector may have accepted the message; never retry automatically."""
 
 
-def _activity(text: str, image: outbound.Prepared | None, mentions: list[outbound.Mention] = ()):
+def _quote_id(value: str) -> str:
+    # The SDK interpolates the ID directly into a Teams XML attribute.
+    if value in (".", "..") or not re.fullmatch(r"[A-Za-z0-9_.:-]+", value):
+        raise argparse.ArgumentTypeError("expected a Teams message ID")
+    return value
+
+
+def _activity(text: str, image: outbound.Prepared | None, mentions: list[outbound.Mention] = (),
+              quotes: tuple[str, ...] = ()):
     from microsoft_teams.api import Account, Attachment, MentionEntity, MessageActivityInput
 
-    activity = MessageActivityInput(text=outbound.render(text, mentions), text_format="xml")
+    activity = MessageActivityInput(text_format="xml")
+    for quote in quotes:
+        activity.add_quote(quote)
+    activity.add_text(outbound.render(text, mentions))
     if image is not None:
         activity.add_attachments(Attachment(content_type=image.content_type, content_url=image.data_uri(), name=image.name))
     for m in mentions:
@@ -112,8 +125,9 @@ def _activity(text: str, image: outbound.Prepared | None, mentions: list[outboun
 
 
 async def _send(creds: config.Credentials, conversation_id: str, service_url: str, text: str,
-                image: outbound.Prepared | None = None, mentions: list[outbound.Mention] = ()) -> str | None:
-    activity = _activity(text, image, mentions)
+                image: outbound.Prepared | None = None, mentions: list[outbound.Mention] = (),
+                quotes: tuple[str, ...] = ()) -> str | None:
+    activity = _activity(text, image, mentions, quotes)
 
     async def call(app):
         try:
@@ -145,6 +159,35 @@ async def _delete(creds: config.Credentials, conversation_id: str, service_url: 
         await app.api.conversations.activities_client.delete(conversation_id, activity_id, service_url=service_url)
 
     await _with_app(creds, "delete", call)
+
+
+async def _edit(creds: config.Credentials, conversation_id: str, service_url: str,
+                activity_id: str, text: str, mentions: list[outbound.Mention],
+                quotes: tuple[str, ...]) -> None:
+    from microsoft_teams.api import Account, ConversationAccount
+
+    activity = _activity(text, None, mentions, quotes)
+    activity.id = activity_id
+    activity.from_ = Account(id=creds.client_id)
+    activity.conversation = ConversationAccount(id=conversation_id)
+
+    async def call(app):
+        try:
+            await app.api.conversations.activities_client.update(
+                conversation_id, activity_id, activity, service_url=service_url)
+        except asyncio.CancelledError as error:
+            raise UncertainSend("edit deadline exceeded after dispatch; inspect the message before retrying") from error
+        except Exception as error:
+            status = getattr(getattr(error, "response", None), "status_code", None)
+            before_dispatch = isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+            if not before_dispatch and (
+                isinstance(error, (httpx.TransportError, TimeoutError, ConnectionError, json.JSONDecodeError, KeyError))
+                or status is not None and status >= 500
+            ):
+                raise UncertainSend("edit outcome uncertain; inspect the message before retrying") from error
+            raise
+
+    await _with_app(creds, "edit", call)
 
 
 def _retry_after(response) -> float:
@@ -263,6 +306,7 @@ def cmd_send(args) -> int:
     # With an image the text is an optional caption; stdin is read only for text messages.
     # A dry run without --text checks the chat and image only.
     text = args.text if args.text is not None else "" if image or args.dry_run else sys.stdin.read()
+    quotes = tuple(args.quote or ())
     try:
         text, mentions = outbound.tags(text, store.members(con, conv["id"]))
     except outbound.TagError as e:
@@ -272,13 +316,14 @@ def cmd_send(args) -> int:
         chats = names.load_chats()
         print(f"would send to {names.label(chats[conv['id']]) if conv['id'] in chats else conv['name']}: {conv['id']}"
               + (f" with {image.name} ({image.width}x{image.height}, {len(image.data) // 1024} KB)" if image else "")
+              + (f", quoting {', '.join(quotes)}" if quotes else "")
               + (f", tagging {', '.join(m.name for m in mentions)}" if mentions else ""))
         return 0
     if not text.strip() and image is None:
         print("toucan-bot: empty message", file=sys.stderr)
         return 2
     try:
-        activity_id = asyncio.run(_send(creds, conv["id"], conv["service_url"], text, image, mentions))
+        activity_id = asyncio.run(_send(creds, conv["id"], conv["service_url"], text, image, mentions, quotes))
     except UncertainSend as e:
         print(f"toucan-bot: {e}", file=sys.stderr)
         return 4
@@ -295,6 +340,60 @@ def cmd_send(args) -> int:
     except Exception:  # the POST succeeded; a local failure must not invite a duplicate
         print("toucan-bot: message accepted but receipt unavailable; delivery uncertain", file=sys.stderr)
         return 4
+    return 0
+
+
+def cmd_edit(args) -> int:
+    creds = config.load_credentials()
+    if creds is None:
+        print("toucan-bot: not registered yet; finish the setup link first", file=sys.stderr)
+        return 2
+    with closing(store.connect(config.db_path())) as con:
+        chats = names.load_chats()
+        conversation = args.conversation
+        if args.to:
+            try:
+                conversation = names.resolve(args.to, [row["id"] for row in store.conversations(con)], chats)
+            except names.NotFound as error:
+                print(f"toucan-bot: {error}", file=sys.stderr)
+                return 2
+        conv = store.get_conversation(con, conversation)
+        if conv is None:
+            print("toucan-bot: unknown conversation; the bot must be added to it or messaged first", file=sys.stderr)
+            return 2
+        text = args.text if args.text is not None else sys.stdin.read()
+        if not text.strip():
+            print("toucan-bot: empty replacement text", file=sys.stderr)
+            return 2
+        try:
+            text, mentions = outbound.tags(text, store.members(con, conv["id"]))
+        except outbound.TagError as error:
+            print(f"toucan-bot: {error}", file=sys.stderr)
+            return 2
+
+    quotes = tuple(args.quote or ())
+    if not args.dry_run:
+        try:
+            asyncio.run(_edit(creds, conv["id"], conv["service_url"], args.activity, text, mentions, quotes))
+        except UncertainSend as error:
+            print(f"toucan-bot: {error}", file=sys.stderr)
+            return 4
+        except httpx.HTTPStatusError as error:
+            print(f"toucan-bot: edit failed: HTTP {error.response.status_code}", file=sys.stderr)
+            return 1
+        except Exception as error:
+            print(f"toucan-bot: edit failed: {type(error).__name__}: {error}", file=sys.stderr)
+            return 1
+    to = (names.label(chats[conv["id"]]) if conv["id"] in chats else conv["name"]) or conv["id"]
+    tagged = [mention.name for mention in mentions]
+    result = {"conversation_id": conv["id"], "to": to, "activity_id": args.activity,
+              "mentions": tagged, "quotes": quotes, "dry_run": args.dry_run}
+    description = f"{'would edit' if args.dry_run else 'edited'} message {args.activity} in {to}"
+    if tagged:
+        description += f", tagging {', '.join(tagged)}"
+    if quotes:
+        description += f", quoting {', '.join(quotes)}"
+    print(json.dumps(result) if args.json else description)
     return 0
 
 
@@ -409,8 +508,20 @@ def main(argv=None) -> int:
     s.add_argument("--text", help="message text, or the caption with --image (default: read stdin); "
                                   "@[ENTRA_ID] tags a member of the chat")
     s.add_argument("--image", help="still PNG, JPEG, GIF or WebP to show inline; resized to fit 1024x1024")
+    s.add_argument("--quote", metavar="MESSAGE_ID", action="append", type=_quote_id,
+                   help="quote a Teams message from the destination chat (repeat for multiple messages)")
     s.add_argument("--dry-run", action="store_true", help="print which chat it would go to, and send nothing")
     s.set_defaults(fn=cmd_send)
+    e = sub.add_parser("edit", help="edit a message Toucan posted")
+    to = e.add_mutually_exclusive_group(required=True)
+    to.add_argument("--to", help="person or chat name, like `send --to`")
+    to.add_argument("--conversation", help="conversation ID from `toucan-bot conversations`")
+    e.add_argument("--activity", "--id", required=True, type=_quote_id, help="activity ID that `send` printed")
+    e.add_argument("--text", help="replacement text (default: read stdin); @[ENTRA_ID] tags a member of the chat")
+    e.add_argument("--quote", metavar="MESSAGE_ID", action="append", type=_quote_id,
+                   help="include this quote in the replacement (repeat for multiple messages)")
+    e.add_argument("--dry-run", action="store_true", help="show the target message, mentions and quotes without editing")
+    e.set_defaults(fn=cmd_edit)
     d = sub.add_parser("delete", help="delete a message Toucan posted")
     d.add_argument("--conversation", required=True, help="conversation ID from `toucan-bot conversations`")
     d.add_argument("--activity", required=True, help="activity ID that `send` printed")
