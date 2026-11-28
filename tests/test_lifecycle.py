@@ -634,3 +634,65 @@ def test_send_threads_must_list_other_configured_threads(world, value):
     world.config_path.write_text(text.replace('reply_via_whatsapp = true\n', f'reply_via_whatsapp = true\nsend_threads = {json.dumps(value)}\n', 1))
     with pytest.raises(ValidationError, match='send_threads'):
         load(world.config_path)
+
+
+def test_discard_clears_a_failed_delivery_alert_and_keeps_the_row(world, monkeypatch, capsys):
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    monkeypatch.setenv('TOUCAN_DB', str(world.db_path))
+    world.seed()
+    req = world.request()
+    claim = world.app.claim([req], 'project-a')
+    world.send_result = subprocess.CompletedProcess([], 1, '', 'store is locked')
+    with pytest.raises(RuntimeError):
+        world.app.deliver(req, claim, text='Hi, I am here')
+    out = world.app.rows('SELECT id FROM outbox')[0]['id']
+    assert f'failed:{out}' in world.app.sync()['problems']
+    sends = len(world.sends)
+    assert main(['discard', str(out), '--reason', 'Request answered another way', '--json'],
+                effects=world.fx, paths=world.paths) == 0
+    assert json.loads(capsys.readouterr().out) == dict(outbox=out, request=req, action='discard')
+    [row] = world.app.rows('SELECT * FROM outbox')
+    assert row['state'] == 'failed' and row['discarded_at'] and row['discard_reason'] == 'Request answered another way'
+    assert f'failed:{out}' not in world.app.sync()['problems']
+    assert len(world.sends) == sends
+    assert world.app.get(req)['state'] == 'claimed'
+    assert main(['status', '--json'], effects=world.fx, paths=world.paths) == 0
+    assert json.loads(capsys.readouterr().out)['outbox'] == []
+    [event] = world.app.rows("SELECT * FROM events WHERE kind='delivery_discarded'")
+    assert event['request_id'] == req and json.loads(event['detail_json'])['outbox'] == out
+    assert main(['discard', str(out), '--reason', 'again'], effects=world.fx, paths=world.paths) == 3
+    assert 'already discarded' in capsys.readouterr().err
+
+
+def test_discard_refuses_anything_but_a_failed_delivery(world, monkeypatch, capsys):
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    monkeypatch.setenv('TOUCAN_DB', str(world.db_path))
+    world.seed()
+    req = world.request()
+    claim = world.app.claim([req], 'project-a')
+    world.app.deliver(req, claim, text='Answer', keep_open=True)
+    out = world.app.rows('SELECT id FROM outbox')[0]['id']
+    assert main(['discard', str(out), '--reason', 'x'], effects=world.fx, paths=world.paths) == 3
+    assert 'is sent' in capsys.readouterr().err
+    world.app.db.execute("UPDATE outbox SET state='uncertain' WHERE id=?", (out,))
+    world.app.db.commit()
+    assert main(['discard', str(out), '--reason', 'x'], effects=world.fx, paths=world.paths) == 3
+    assert 'check whether it arrived' in capsys.readouterr().err
+    assert main(['discard', '999', '--reason', 'x'], effects=world.fx, paths=world.paths) == 2
+    assert main(['discard', str(out), '--reason', '  '], effects=world.fx, paths=world.paths) == 2
+    assert world.app.rows('SELECT discarded_at FROM outbox') == [{'discarded_at': None}]
+
+
+def test_discarded_standalone_send_leaves_status(world, monkeypatch, capsys):
+    monkeypatch.setenv('TOUCAN_CONFIG', str(world.config_path))
+    monkeypatch.setenv('TOUCAN_DB', str(world.db_path))
+    world.seed()
+    world.send_result = subprocess.CompletedProcess([], 1, '', 'store is locked')
+    with pytest.raises(RuntimeError):
+        world.app.send('group', 'project-a', text='Update')
+    [row] = world.app.rows('SELECT id,request_id FROM outbox')
+    assert row['request_id'] is None
+    assert main(['discard', str(row['id']), '--reason', 'Out of date'], effects=world.fx, paths=world.paths) == 0
+    capsys.readouterr()
+    assert main(['status', '--json'], effects=world.fx, paths=world.paths) == 0
+    assert json.loads(capsys.readouterr().out)['outbox'] == []

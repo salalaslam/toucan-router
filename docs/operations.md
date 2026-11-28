@@ -63,6 +63,7 @@ toucan escalate 43 --claim CLAIM --category deploy --want 'Ship the billing fix'
 toucan send --route team-chat --thread project-a --text 'The test results are ready.'
 toucan upload /tmp/proof.mp4 --title 'Fix walkthrough'
 toucan status
+toucan discard 17 --reason 'Request closed; the reply is out of date'   # a failed delivery that must never be retried
 toucan log --thread project-a --since 24h
 ```
 
@@ -483,7 +484,12 @@ message but the response never arrived), the delivery becomes `uncertain` and To
 it automatically. Further replies on that request are refused until a person has checked
 whether the message arrived. A delivery still `pending` after five minutes never reached the
 sender, so Toucan marks it failed, alerts, and allows a retry. Failed sends alert once each,
-stay visible in `status`, and are retried explicitly. The `rate_per_hour` limit applies to
+stay visible in `status`, and are retried explicitly. When a failed send should never go out
+(the request was answered another way, or the text is out of date), `toucan discard OUTBOX
+--reason TEXT` gives up on it: the row stays with `discarded_at` and `discard_reason`, a
+`delivery_discarded` event is logged, `status` stops listing it and the alert recovers on the
+next sync. Only failed deliveries can be discarded; an uncertain one still needs a person to
+check whether it arrived. The `rate_per_hour` limit applies to
 messages for other people and counts pending, sent, sending and uncertain attempts to that
 recipient from the last hour. Drafts and escalations to you are never held back.
 

@@ -97,6 +97,25 @@ class App:
     def record(self, kind, thread=None, request=None, **detail):
         event(self.db, self.fx.now(), kind, thread, request, **detail)
 
+    def discard(self, out, reason):
+        """Give up on a failed delivery that should never be retried: its alert recovers on the next sync and
+        status stops listing it. The row stays, stamped, for the audit trail. Sends nothing and leaves the request alone."""
+        if not reason.strip():
+            raise ValidationError('--reason cannot be empty')
+        with self.transaction():
+            row = self.db.execute('SELECT o.state,o.discarded_at,o.request_id,r.thread FROM outbox o '
+                                  'LEFT JOIN requests r ON r.id=o.request_id WHERE o.id=?', (out,)).fetchone()
+            if row is None:
+                raise ValidationError(f'no outbox delivery {out}')
+            if row['discarded_at'] is not None:
+                raise Refused(f'outbox {out} was already discarded')
+            if row['state'] != 'failed':
+                raise Refused(f'outbox {out} is {row["state"]}; only a failed delivery can be discarded'
+                              + (' (an uncertain one needs a person to check whether it arrived)' if row['state'] == 'uncertain' else ''))
+            self.db.execute('UPDATE outbox SET discarded_at=?,discard_reason=? WHERE id=?', (self.fx.now(), reason.strip(), out))
+            self.record('delivery_discarded', row['thread'], row['request_id'], outbox=out, reason=reason.strip())
+        return dict(outbox=out, request=row['request_id'], action='discard')
+
     def live_thread(self, key):
         thread = self.cfg['threads'][key]
         return sources.hook_file_thread(self.paths, thread['hook_file']) or thread.get('t3_thread')
@@ -542,7 +561,7 @@ class App:
                 self.record('delivery_uncertain', out['thread'], out['request_id'], outbox=out['id'])
             for out in self.rows("SELECT id FROM outbox WHERE state='uncertain'"):
                 problems[f'uncertain:{out["id"]}'] = f'Outbox {out["id"]}: delivery uncertain; inspect before sending again'
-            for out in self.rows("SELECT o.id,o.error FROM outbox o WHERE o.state='failed' AND NOT EXISTS ("
+            for out in self.rows("SELECT o.id,o.error FROM outbox o WHERE o.state='failed' AND o.discarded_at IS NULL AND NOT EXISTS ("
                                  "SELECT 1 FROM outbox retry WHERE retry.state='sent' AND retry.id>o.id "
                                  "AND retry.request_id IS o.request_id AND retry.kind=o.kind AND retry.source=o.source "
                                  "AND retry.to_chat=o.to_chat AND (o.request_id IS NOT NULL OR (retry.text=o.text AND retry.file IS o.file)))"):

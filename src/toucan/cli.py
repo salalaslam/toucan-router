@@ -58,7 +58,7 @@ def pause_note(app, pause):
 def parser():
     p = argparse.ArgumentParser(prog='toucan')
     commands = p.add_subparsers(dest='command', required=True)
-    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'answer', 'rotate', 'init', 'doctor', 'upload', 'forward', 'bounce', 'digest', 'retriage', 'pause', 'unpause'):
+    for name in ('check-config', 'sync', 'inbox', 'claim', 'release', 'done', 'reply', 'react', 'send', 'close', 'escalate', 'status', 'log', 'import-pending', 'wait', 'resume', 'answer', 'rotate', 'init', 'doctor', 'upload', 'forward', 'bounce', 'digest', 'retriage', 'pause', 'unpause', 'discard'):
         sub = commands.add_parser(name)
         sub.add_argument('--json', action='store_true')
         if name in ('check-config', 'doctor'):
@@ -122,6 +122,11 @@ def parser():
             sub.description = 'Start routing again. The next sync catches up on messages that arrived during the pause.'
         if name == 'close':
             sub.add_argument('--reason', required=True)
+        if name == 'discard':
+            sub.description = ('Give up on a failed delivery that should not be retried, so its alert clears. '
+                               'Only failed deliveries; the outbox row is kept. Sends nothing.')
+            sub.add_argument('outbox', type=int, help='outbox ID from `toucan status`')
+            sub.add_argument('--reason', required=True, help='why it must never be sent')
         if name == 'sync':
             sub.add_argument('--dry-run', action='store_true')
             sub.add_argument('--shadow', action='store_true', help='keep state but send no wake-ups or alerts')
@@ -436,6 +441,8 @@ def dispatch(args, app):
         return app.resume(args.request, args.thread)
     if c == 'react':
         return app.react(args.request, args.claim, args.emoji, message=args.message, remove=args.remove, thread=args.thread)
+    if c == 'discard':
+        return app.discard(args.outbox, args.reason)
     if c in ('release', 'done', 'close'):
         app.transition(args.request, args.claim, c, getattr(args, 'note', getattr(args, 'reason', '')), args.thread)
         return dict(request=args.request, action=c)
@@ -485,7 +492,7 @@ def dispatch(args, app):
                     requests=app.rows("SELECT thread,state,count(*) AS count FROM requests WHERE state IN ('new','claimed','done','escalated') "
                                       'AND routing IS NULL GROUP BY thread,state'),
                     held=router.held_requests(app.db),
-                    outbox=app.rows("SELECT * FROM outbox WHERE state!='sent' OR (request_id IS NULL AND created_at>=?)",
+                    outbox=app.rows("SELECT * FROM outbox WHERE discarded_at IS NULL AND (state!='sent' OR (request_id IS NULL AND created_at>=?))",
                                     (app.fx.now() - 86400,)), alerts=app.rows('SELECT * FROM alerts'),
                     promises=app.rows("SELECT id,thread,promise,promise_due FROM requests "
                                       "WHERE state IN ('new','held','claimed','done') AND promise IS NOT NULL"),
